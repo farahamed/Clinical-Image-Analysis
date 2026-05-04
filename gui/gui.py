@@ -1,7 +1,7 @@
 import customtkinter as ctk
-from tkinter import filedialog, messagebox, Canvas, Scrollbar
-import tkinter as tk
+from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk
+import tkinter as tk
 import numpy as np
 from image_loader import load_regular_image, load_dicom_image, get_dicom_tag
 from metadata import build_metadata_text
@@ -11,165 +11,136 @@ ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
 
-class ScrollableImageCanvas(ctk.CTkFrame):
-  
+class ScrollableImageView(ctk.CTkFrame):
+    """
+    A scrollable image viewer with panning via mouse drag.
+    Displays either fitted (fit_to_window=True) or actual size (fit_to_window=False).
+    """
+    def __init__(self, master, bg_color="#2b2b2b", **kwargs):
+        super().__init__(master, fg_color="transparent", **kwargs)
 
-    def __init__(self, master, **kwargs):
-        super().__init__(master, **kwargs)
+        # Canvas for image display
+        self.canvas = tk.Canvas(self, bg=bg_color, highlightthickness=0)
+        h_scroll = tk.Scrollbar(self, orient="horizontal", command=self.canvas.xview)
+        v_scroll = tk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
 
-    
-        self.canvas = Canvas(
-            self,
-            bg="#2b2b2b",
-            highlightthickness=0,
-            cursor="fleur"          
-        )
-
-        self.h_scroll = Scrollbar(self, orient="horizontal",
-                                  command=self.canvas.xview)
-        self.v_scroll = Scrollbar(self, orient="vertical",
-                                  command=self.canvas.yview)
-
-        self.canvas.configure(
-            xscrollcommand=self.h_scroll.set,
-            yscrollcommand=self.v_scroll.set
-        )
-
-       
-        self.h_scroll.pack(side="bottom", fill="x")
-        self.v_scroll.pack(side="right",  fill="y")
-        self.canvas.pack(side="left", fill="both", expand=True)
-
-    
-        self.canvas.bind("<ButtonPress-1>",   self._on_drag_start)
-        self.canvas.bind("<B1-Motion>",       self._on_drag_move)
+        self.canvas.configure(xscrollcommand=h_scroll.set, yscrollcommand=v_scroll.set)
 
         
-        self.canvas.bind("<MouseWheel>",      self._on_mousewheel_vertical)
-        self.canvas.bind("<Shift-MouseWheel>",self._on_mousewheel_horizontal)
-        self.canvas.bind("<Button-4>",        self._on_mousewheel_vertical)
-        self.canvas.bind("<Button-5>",        self._on_mousewheel_vertical)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        h_scroll.grid(row=1, column=0, sticky="ew")
+        v_scroll.grid(row=0, column=1, sticky="ns")
 
-        self._drag_start_x = 0
-        self._drag_start_y = 0
-        self._tk_image = None          
-        self._placeholder_text = None  
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
 
-        self._show_placeholder("No image loaded")
+        self.image_on_canvas = None
+        self.current_image_array = None
+        self.fit_mode = True
+        self.photo = None  
 
-
-    def display_image(self, image_array):
-       
-        self.canvas.delete("all")
-
-        pil_image = Image.fromarray(image_array)
-        self._tk_image = ImageTk.PhotoImage(pil_image)  # must keep reference
-
-        img_w, img_h = pil_image.size
-
-      
-        self.canvas.create_image(0, 0, anchor="nw", image=self._tk_image)
-
-       
-        self.canvas.configure(scrollregion=(0, 0, img_w, img_h))
+        self.canvas.bind("<ButtonPress-1>", self._on_drag_start)
+        self.canvas.bind("<B1-Motion>", self._on_drag_move)
 
         
-        self.canvas.xview_moveto(0)
-        self.canvas.yview_moveto(0)
+        self.bind("<Configure>", self._on_frame_configure)
 
-    def display_fit(self, image_array, max_size=450):
-    
-        pil_image = Image.fromarray(image_array)
-        pil_image.thumbnail((max_size, max_size))
-        self._show_pil(pil_image, centre=True)
+        self._placeholder_text = "No image loaded"
+        self.show_placeholder()
 
-    def clear(self, message="No image loaded"):
-        self.canvas.delete("all")
-        self._tk_image = None
-        self._show_placeholder(message)
+    def _on_frame_configure(self, event=None):
+        """Re-draw when the frame is resized (only in fit mode)."""
+        if self.current_image_array is not None and self.fit_mode:
+            self.update_display()
+        elif self.current_image_array is None:
+            self.show_placeholder()
 
+    def set_image(self, image_array, fit_to_window=True):
+        """Load a new image into the viewer."""
+        if image_array is None:
+            self.clear()
+            return
+        self.current_image_array = image_array
+        self.fit_mode = fit_to_window
+        self.update_display()
 
-    def _show_pil(self, pil_image, centre=False):
-        self.canvas.delete("all")
-        self._tk_image = ImageTk.PhotoImage(pil_image)
-        img_w, img_h = pil_image.size
+    def update_display(self):
+        """Render the image on the canvas according to current mode."""
+        if self.current_image_array is None:
+            self.show_placeholder()
+            return
 
-        if centre:
-            cw = self.canvas.winfo_width()  or img_w
-            ch = self.canvas.winfo_height() or img_h
-            x = max(cw // 2, img_w // 2)
-            y = max(ch // 2, img_h // 2)
-            self.canvas.create_image(x, y, anchor="center", image=self._tk_image)
-            self.canvas.configure(scrollregion=(0, 0, max(cw, img_w),
-                                                     max(ch, img_h)))
+        if self.fit_mode:
+           
+            canvas_width = self.canvas.winfo_width()
+            canvas_height = self.canvas.winfo_height()
+            if canvas_width <= 1 or canvas_height <= 1:
+                self.after(50, self.update_display)
+                return
+
+            pil_img = Image.fromarray(self.current_image_array)
+            img_w, img_h = pil_img.size
+            scale = min(canvas_width / img_w, canvas_height / img_h)
+            new_w, new_h = int(img_w * scale), int(img_h * scale)
+            resized = pil_img.resize((new_w, new_h), Image.LANCZOS)
+            self.photo = ImageTk.PhotoImage(resized)
+
+            self.canvas.delete("all")
+            self.canvas.create_image(canvas_width // 2, canvas_height // 2,
+                                     anchor="center", image=self.photo)
+            self.canvas.configure(scrollregion=(0, 0, canvas_width, canvas_height))
         else:
-            self.canvas.create_image(0, 0, anchor="nw", image=self._tk_image)
-            self.canvas.configure(scrollregion=(0, 0, img_w, img_h))
+            pil_img = Image.fromarray(self.current_image_array)
+            self.photo = ImageTk.PhotoImage(pil_img)
+            self.canvas.delete("all")
+            self.canvas.create_image(0, 0, anchor="nw", image=self.photo)
+            self.canvas.configure(scrollregion=(0, 0, pil_img.width, pil_img.height))
 
+        
         self.canvas.xview_moveto(0)
         self.canvas.yview_moveto(0)
 
-    def _show_placeholder(self, text):
+    def show_placeholder(self):
+        """Display centered placeholder text."""
         self.canvas.delete("all")
-        self.canvas.configure(scrollregion=(0, 0, 1, 1))
-        # Draw placeholder text in the middle of whatever space is available
-        self.canvas.update_idletasks()
-        w = self.canvas.winfo_width()  or 400
-        h = self.canvas.winfo_height() or 400
-        self._placeholder_text = self.canvas.create_text(
-            w // 2, h // 2,
-            text=text,
-            fill="#888888",
-            font=("Arial", 14)
-        )
+        self.current_image_array = None
+        w = self.canvas.winfo_width()
+        h = self.canvas.winfo_height()
+        if w <= 1 or h <= 1:
+            self.after(50, self.show_placeholder)
+            return
+        self.canvas.create_text(w // 2, h // 2, text=self._placeholder_text,
+                                fill="#aaaaaa", font=("Segoe UI", 14, "italic"))
 
-    # ---------------------------------------------
-    #  funcs 3shan at7rk elimage wana b3ml zoom 
-    # ---------------------------------------------
+    def clear(self):
+        """Clear the displayed image and show placeholder."""
+        self.current_image_array = None
+        self.show_placeholder()
 
+      #  funcs 3shan at7rk elimage wana b3ml zoom
     def _on_drag_start(self, event):
         self.canvas.scan_mark(event.x, event.y)
-        self._drag_start_x = event.x
-        self._drag_start_y = event.y
 
     def _on_drag_move(self, event):
         self.canvas.scan_dragto(event.x, event.y, gain=1)
 
-    def _on_mousewheel_vertical(self, event):
-        # Windows: event.delta; Linux: event.num
-        if event.num == 4:
-            self.canvas.yview_scroll(-1, "units")
-        elif event.num == 5:
-            self.canvas.yview_scroll(1, "units")
-        else:
-            self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
-    def _on_mousewheel_horizontal(self, event):
-        if event.num == 4:
-            self.canvas.xview_scroll(-1, "units")
-        elif event.num == 5:
-            self.canvas.xview_scroll(1, "units")
-        else:
-            self.canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
-
 
 class MedicalImageApp:
-
     def __init__(self):
-        self.current_original  = None
-        self.current_processed = None
+        self.current_original = None      
+        self.current_processed = None     
         self.zoom_factor = 1.0
 
         self.app = ctk.CTk()
         self.app.title("Clinical Image Analysis Workbench")
-        self.app.geometry("1200x750")
+        self.app.geometry("1100x700")
         self.app.minsize(900, 600)
 
         self.build_layout()
         self.build_left_panel()
         self.build_tabs()
 
-   
+    # ------------------------------ Layout ---------------------------------
     def build_layout(self):
         self.main_frame = ctk.CTkFrame(self.app)
         self.main_frame.pack(fill="both", expand=True, padx=10, pady=10)
@@ -190,7 +161,6 @@ class MedicalImageApp:
 
         ctk.CTkFrame(self.left_panel, height=2, fg_color="#444").pack(fill="x", padx=10, pady=5)
 
-       
         ctk.CTkLabel(self.left_panel, text="FILE",
                      font=ctk.CTkFont(size=11), text_color="#888").pack(pady=(8, 2))
 
@@ -207,22 +177,19 @@ class MedicalImageApp:
 
         ctk.CTkFrame(self.left_panel, height=2, fg_color="#444").pack(fill="x", padx=10, pady=10)
 
-      
         ctk.CTkLabel(self.left_panel, text="ZOOM",
                      font=ctk.CTkFont(size=11), text_color="#888").pack(pady=(2, 4))
 
         self.zoom_method = ctk.CTkOptionMenu(
             self.left_panel,
             values=["Bilinear", "Nearest Neighbor"],
-            width=180,
-            font=ctk.CTkFont(size=12)
+            width=180, font=ctk.CTkFont(size=12)
         )
         self.zoom_method.pack(pady=4, padx=10)
         self.zoom_method.set("Bilinear")
 
         self.zoom_label = ctk.CTkLabel(
-            self.left_panel, text="Zoom: 100%",
-            font=ctk.CTkFont(size=12)
+            self.left_panel, text="Zoom: 100%", font=ctk.CTkFont(size=12)
         )
         self.zoom_label.pack(pady=4)
 
@@ -247,26 +214,14 @@ class MedicalImageApp:
             fg_color="#444", hover_color="#333"
         ).pack(pady=4, padx=10)
 
-        
-        ctk.CTkFrame(self.left_panel, height=2, fg_color="#444").pack(fill="x", padx=10, pady=10)
-        ctk.CTkLabel(
-            self.left_panel,
-            text="Drag or use scrollbars\nto pan a zoomed image.",
-            font=ctk.CTkFont(size=10),
-            text_color="#888",
-            justify="center"
-        ).pack(pady=4, padx=10)
-
         self.status_label = ctk.CTkLabel(
-            self.left_panel, text="Ready",
-            font=ctk.CTkFont(size=11), text_color="#888"
+            self.left_panel, text="Ready", font=ctk.CTkFont(size=11), text_color="#888"
         )
         self.status_label.pack(side="bottom", pady=10)
 
     def build_tabs(self):
         self.tab_view = ctk.CTkTabview(self.right_area)
         self.tab_view.pack(fill="both", expand=True)
-
         self.tab_view.add("Image Viewer")
         self.tab_view.add("Metadata")
 
@@ -275,29 +230,23 @@ class MedicalImageApp:
 
     def build_image_viewer_tab(self):
         viewer_tab = self.tab_view.tab("Image Viewer")
-
         images_frame = ctk.CTkFrame(viewer_tab)
         images_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
-     
         original_frame = ctk.CTkFrame(images_frame)
         original_frame.pack(side="left", fill="both", expand=True, padx=5)
-
         ctk.CTkLabel(original_frame, text="Original Image",
                      font=ctk.CTkFont(size=13, weight="bold")).pack(pady=5)
+        self.original_image_view = ScrollableImageView(original_frame, height=450, width=450)
+        self.original_image_view.pack(fill="both", expand=True, padx=5, pady=5)
 
-        self.original_canvas = ScrollableImageCanvas(original_frame)
-        self.original_canvas.pack(fill="both", expand=True, padx=4, pady=(0, 4))
-
-        # --- Processed image panel ---
+      
         processed_frame = ctk.CTkFrame(images_frame)
         processed_frame.pack(side="right", fill="both", expand=True, padx=5)
-
         ctk.CTkLabel(processed_frame, text="Processed Image",
                      font=ctk.CTkFont(size=13, weight="bold")).pack(pady=5)
-
-        self.processed_canvas = ScrollableImageCanvas(processed_frame)
-        self.processed_canvas.pack(fill="both", expand=True, padx=4, pady=(0, 4))
+        self.processed_image_view = ScrollableImageView(processed_frame, height=450, width=450)
+        self.processed_image_view.pack(fill="both", expand=True, padx=5, pady=5)
 
     def build_metadata_tab(self):
         meta_tab = self.tab_view.tab("Metadata")
@@ -305,33 +254,27 @@ class MedicalImageApp:
                      font=ctk.CTkFont(size=16, weight="bold")).pack(pady=10)
 
         self.metadata_box = ctk.CTkTextbox(
-            meta_tab, width=600, height=400,
-            font=ctk.CTkFont(size=13)
+            meta_tab, width=600, height=400, font=ctk.CTkFont(size=13)
         )
         self.metadata_box.pack(fill="both", expand=True, padx=20, pady=10)
         self.metadata_box.insert("1.0", "Load an image to see its information here.")
         self.metadata_box.configure(state="disabled")
 
-    # ------------------------------------------------------------------
-    # function bts3d anna n display elimage 
-    # ------------------------------------------------------------------
+      # function bts3d anna n display elimage
 
-    def show_fit_image(self, canvas_widget, image_array):
-        """Display image scaled to fit the panel (no scrollbars needed)."""
-        try:
-            canvas_widget.display_fit(image_array, max_size=450)
-        except Exception as e:
-            canvas_widget.clear(f"Cannot display: {e}")
+    def show_fit_image(self, viewer, image_array):
+        """Display image fitted within the viewer (no scrollbars needed)."""
+        if image_array is None:
+            viewer.clear()
+        else:
+            viewer.set_image(image_array, fit_to_window=True)
 
-    def show_actual_image(self, canvas_widget, image_array):
-        """
-        Display image at its true pixel size.
-        Scrollbars activate automatically when the image overflows the panel.
-        """
-        try:
-            canvas_widget.display_image(image_array)
-        except Exception as e:
-            canvas_widget.clear(f"Cannot display: {e}")
+    def show_actual_image(self, viewer, image_array):
+        """Display image at actual size (scrollbars appear if larger than view)."""
+        if image_array is None:
+            viewer.clear()
+        else:
+            viewer.set_image(image_array, fit_to_window=False)
 
     def show_metadata_text(self, text):
         self.metadata_box.configure(state="normal")
@@ -340,17 +283,15 @@ class MedicalImageApp:
         self.metadata_box.configure(state="disabled")
         self.tab_view.set("Metadata")
 
-    
-
     def load_image(self):
         file_path = filedialog.askopenfilename(
             title="Choose an Image File",
             filetypes=[
                 ("Medical Images", "*.jpg *.jpeg *.bmp *.dcm"),
-                ("JPEG Images",    "*.jpg *.jpeg"),
-                ("BMP Images",     "*.bmp"),
-                ("DICOM Images",   "*.dcm"),
-                ("All Files",      "*.*")
+                ("JPEG Images", "*.jpg *.jpeg"),
+                ("BMP Images", "*.bmp"),
+                ("DICOM Images", "*.dcm"),
+                ("All Files", "*.*")
             ]
         )
         if not file_path:
@@ -359,50 +300,46 @@ class MedicalImageApp:
         try:
             if file_path.lower().endswith('.dcm'):
                 pixel_array, dicom_data = load_dicom_image(file_path)
-                self.current_original  = pixel_array
+                self.current_original = pixel_array
                 self.current_processed = pixel_array.copy()
 
-                self.show_fit_image(self.original_canvas,  self.current_original)
-                self.show_fit_image(self.processed_canvas, self.current_processed)
+                self.show_fit_image(self.original_image_view, self.current_original)
+                self.show_fit_image(self.processed_image_view, self.current_processed)
 
-                height, width = pixel_array.shape
+                h, w = pixel_array.shape
                 text = build_metadata_text(
-                    file_name    = file_path.split("/")[-1],
-                    width        = width,
-                    height       = height,
-                    bit_depth    = get_dicom_tag(dicom_data, "BitsAllocated"),
-                    file_format  = "DICOM",
-                    modality     = get_dicom_tag(dicom_data, "Modality"),
-                    patient_name = get_dicom_tag(dicom_data, "PatientName"),
-                    patient_age  = get_dicom_tag(dicom_data, "PatientAge"),
-                    body_part    = get_dicom_tag(dicom_data, "BodyPartExamined")
+                    file_name=file_path.split("/")[-1],
+                    width=w, height=h,
+                    bit_depth=get_dicom_tag(dicom_data, "BitsAllocated"),
+                    file_format="DICOM",
+                    modality=get_dicom_tag(dicom_data, "Modality"),
+                    patient_name=get_dicom_tag(dicom_data, "PatientName"),
+                    patient_age=get_dicom_tag(dicom_data, "PatientAge"),
+                    body_part=get_dicom_tag(dicom_data, "BodyPartExamined")
                 )
                 self.show_metadata_text(text)
 
             elif file_path.lower().endswith(('.jpg', '.jpeg', '.bmp')):
                 image_array = load_regular_image(file_path)
-                self.current_original  = image_array
+                self.current_original = image_array
                 self.current_processed = image_array.copy()
 
-                self.show_fit_image(self.original_canvas,  self.current_original)
-                self.show_fit_image(self.processed_canvas, self.current_processed)
+                self.show_fit_image(self.original_image_view, self.current_original)
+                self.show_fit_image(self.processed_image_view, self.current_processed)
 
-                height, width = image_array.shape
+                h, w = image_array.shape
                 file_name = file_path.split("/")[-1]
                 text = build_metadata_text(
-                    file_name   = file_name,
-                    width       = width,
-                    height      = height,
-                    bit_depth   = 8,
-                    file_format = file_name.split(".")[-1].upper()
+                    file_name=file_name,
+                    width=w, height=h,
+                    bit_depth=8,
+                    file_format=file_name.split(".")[-1].upper()
                 )
                 self.show_metadata_text(text)
 
             else:
-                messagebox.showerror(
-                    "Unsupported Format",
-                    "Please use JPEG, BMP, or DICOM files only."
-                )
+                messagebox.showerror("Unsupported Format",
+                                     "Please use JPEG, BMP, or DICOM files only.")
                 return
 
             self.zoom_factor = 1.0
@@ -423,8 +360,8 @@ class MedicalImageApp:
             defaultextension=".jpg",
             filetypes=[
                 ("JPEG Image", "*.jpg"),
-                ("BMP Image",  "*.bmp"),
-                ("PNG Image",  "*.png")
+                ("BMP Image", "*.bmp"),
+                ("PNG Image", "*.png")
             ]
         )
         if not save_path:
@@ -437,39 +374,37 @@ class MedicalImageApp:
         except Exception as e:
             messagebox.showerror("Save Error", f"Could not save.\nReason: {str(e)}")
 
-    # ---------------
-    # zooming part 
-    # ---------------
 
     def apply_zoom(self):
         if self.current_original is None:
-            messagebox.showwarning("Warning", "No image — please load an image first.")
+            messagebox.showwarning("Warning", "No image loaded. Please load an image first.")
             return
 
         method = "nearest" if self.zoom_method.get() == "Nearest Neighbor" else "bilinear"
+
         try:
             zoomed = zoom_image(self.current_original, self.zoom_factor, method)
-            # Use show_actual_image so scrollbars activate for large zooms
-            self.show_actual_image(self.processed_canvas, zoomed)
+            self.current_processed = zoomed
+            self.show_actual_image(self.processed_image_view, self.current_processed)
             self.status_label.configure(
-                text=f"Zoom {int(self.zoom_factor * 100)}% ({method}) — drag or scroll to pan"
+                text=f"Zoom {int(self.zoom_factor * 100)}% ({method})"
             )
         except Exception as e:
             messagebox.showerror("Zoom Error", f"Could not apply zoom.\nReason: {str(e)}")
 
     def zoom_in(self):
         if self.current_original is None:
-            messagebox.showwarning("Warning", "No image — please load an image first.")
+            messagebox.showwarning("Warning", "No image loaded. Please load an image first.")
             return
-        self.zoom_factor = min(round(self.zoom_factor + 0.25, 2), 4.0)
+        self.zoom_factor = min(round(self.zoom_factor + 0.25, 2), 4.0)   # max 400%
         self.zoom_label.configure(text=f"Zoom: {int(self.zoom_factor * 100)}%")
         self.apply_zoom()
 
     def zoom_out(self):
         if self.current_original is None:
-            messagebox.showwarning("Warning", "No image — please load an image first.")
+            messagebox.showwarning("Warning", "No image loaded. Please load an image first.")
             return
-        self.zoom_factor = max(round(self.zoom_factor - 0.25, 2), 0.25)
+        self.zoom_factor = max(round(self.zoom_factor - 0.25, 2), 0.25)   # min 25%
         self.zoom_label.configure(text=f"Zoom: {int(self.zoom_factor * 100)}%")
         self.apply_zoom()
 
@@ -478,7 +413,8 @@ class MedicalImageApp:
             return
         self.zoom_factor = 1.0
         self.zoom_label.configure(text="Zoom: 100%")
-        self.show_fit_image(self.processed_canvas, self.current_original)
+        self.current_processed = self.current_original.copy()
+        self.show_fit_image(self.processed_image_view, self.current_processed)
         self.status_label.configure(text="Zoom reset")
 
     def run(self):
