@@ -14,6 +14,8 @@ def zero_pad(image, pad_h, pad_w):
 
 
 def convolve2d(image, kernel):
+    image = image.astype(np.float64)
+    
     h, w = image.shape
     kh, kw = kernel.shape
 
@@ -22,7 +24,7 @@ def convolve2d(image, kernel):
 
     padded = np.pad(image, ((pad_h, pad_h), (pad_w, pad_w)), mode='constant')
 
-    result = np.zeros_like(image)
+    result = np.zeros((h, w), dtype=np.float64)
 
     for i in range(h):
         for j in range(w):
