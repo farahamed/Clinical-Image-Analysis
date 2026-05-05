@@ -12,7 +12,10 @@ from pipeline.pipeline_manager import PipelineManager
 from processing.filtering.linear_filters import apply_average, apply_gaussian
 from processing.filtering.nonlinear_filters import median_filter
 from processing.filtering.edge_detection import apply_edge_detection
-from processing.histogram.local_equalization import local_histogram_equalization
+from processing.histogram.local_equalization import (
+    local_histogram_equalization,
+    local_histogram_equalization_optimized
+)
 from processing.geometry.transformations import rotate, shear
 
 
@@ -47,6 +50,7 @@ class ScrollableImageView(ctk.CTkFrame):
         self.current_image_array = None
         self.fit_mode = True
         self.photo = None  
+        self._resize_job = None
 
         self.canvas.bind("<ButtonPress-1>", self._on_drag_start)
         self.canvas.bind("<B1-Motion>", self._on_drag_move)
@@ -58,7 +62,18 @@ class ScrollableImageView(ctk.CTkFrame):
         self.show_placeholder()
 
     def _on_frame_configure(self, event=None):
-        """Re-draw when the frame is resized (only in fit mode)."""
+        """
+        Re-draw when the frame is resized, but debounce the redraw.
+        Without this, the GUI may redraw the image many times while resizing/layout changes.
+        """
+        if self._resize_job is not None:
+            self.after_cancel(self._resize_job)
+
+        self._resize_job = self.after(150, self._redraw_after_resize)
+
+    def _redraw_after_resize(self):
+        self._resize_job = None
+
         if self.current_image_array is not None and self.fit_mode:
             self.update_display()
         elif self.current_image_array is None:
@@ -91,7 +106,7 @@ class ScrollableImageView(ctk.CTkFrame):
             img_w, img_h = pil_img.size
             scale = min(canvas_width / img_w, canvas_height / img_h)
             new_w, new_h = int(img_w * scale), int(img_h * scale)
-            resized = pil_img.resize((new_w, new_h), Image.LANCZOS)
+            resized = pil_img.resize((new_w, new_h), Image.BILINEAR)
             self.photo = ImageTk.PhotoImage(resized)
 
             self.canvas.delete("all")
@@ -558,6 +573,46 @@ class MedicalImageApp:
         else:
             viewer.set_image(image_array, fit_to_window=False)
 
+    def show_zoomed_image(self, viewer, image_array, zoom_factor, method):
+        """
+        Display a zoomed version of the image relative to the fitted view.
+
+        Important:
+        - 100% means fitted-to-window view.
+        - 125% means 1.25 times the fitted display size.
+        - This uses our custom interpolation through zoom_image().
+        - It does not modify the pipeline result.
+        """
+        if image_array is None:
+            viewer.clear()
+            return
+
+        canvas_width = viewer.canvas.winfo_width()
+        canvas_height = viewer.canvas.winfo_height()
+
+        if canvas_width <= 1 or canvas_height <= 1:
+            self.app.after(
+                50,
+                lambda: self.show_zoomed_image(viewer, image_array, zoom_factor, method)
+            )
+            return
+
+        img_h, img_w = image_array.shape[:2]
+
+        # This is the scale used by the normal fitted view.
+        fit_scale = min(canvas_width / img_w, canvas_height / img_h)
+
+        # Zoom relative to the fitted view, not relative to original pixel size.
+        display_scale = fit_scale * zoom_factor
+
+        # Prevent extremely tiny images from becoming 0 pixels wide/high.
+        minimum_scale = max(1 / img_w, 1 / img_h)
+        display_scale = max(display_scale, minimum_scale)
+
+        zoomed = zoom_image(image_array, display_scale, method)
+
+        viewer.set_image(zoomed, fit_to_window=False)            
+
     def show_metadata_text(self, text):
         self.metadata_box.configure(state="normal")
         self.metadata_box.delete("1.0", "end")
@@ -629,9 +684,23 @@ class MedicalImageApp:
 
         try:
             input_image = self.pipeline.get_input_image(self.is_pipeline_enabled())
+
+            if not self.warn_if_large_image(input_image, operation_name):
+                self.status_label.configure(text="Operation cancelled")
+                return
+            
+
+            self.status_label.configure(text=f"Applying: {operation_name}...")
+            self.app.configure(cursor="watch")
+            self.app.update_idletasks()            
+
             result = operation_function(input_image)
+            self.app.configure(cursor="")
 
             self.current_processed = self.pipeline.apply_result(result, operation_name)
+
+            self.zoom_factor = 1.0
+            self.zoom_label.configure(text="Zoom: 100%")
 
             # Use fit display for normal operations so the result does not look zoomed in.
             self.show_fit_image(self.processed_image_view, self.current_processed)
@@ -639,7 +708,10 @@ class MedicalImageApp:
             self.update_pipeline_log()
             self.status_label.configure(text=f"Applied: {operation_name}")
 
+            
+
         except Exception as e:
+            self.app.configure(cursor="")
             messagebox.showerror(
                 "Operation Error",
                 f"Could not apply {operation_name}.\nReason: {str(e)}"
@@ -761,18 +833,21 @@ class MedicalImageApp:
                 messagebox.showwarning("Warning", "No image loaded. Please load an image first.")
                 return
 
-            # At 100%, return to the normal fitted processed image.
-            # Do not display it as actual size, because that looks zoomed in.
+            self.current_processed = input_image.copy()
+
+            # At 100%, show the normal fitted image.
             if self.zoom_factor == 1.0:
-                self.current_processed = input_image.copy()
                 self.show_fit_image(self.processed_image_view, self.current_processed)
                 self.status_label.configure(text="Viewing zoom: 100%")
                 return
 
-            # For zoom in/out, use the custom interpolation function.
-            # This zoom is visual only and does not modify the pipeline result.
-            zoomed = zoom_image(input_image, self.zoom_factor, method)
-            self.show_actual_image(self.processed_image_view, zoomed)
+            # For other zoom levels, zoom relative to the fitted display size.
+            self.show_zoomed_image(
+                self.processed_image_view,
+                self.current_processed,
+                self.zoom_factor,
+                method
+            )
 
             self.status_label.configure(
                 text=f"Viewing zoom: {int(self.zoom_factor * 100)}% ({method})"
@@ -888,13 +963,12 @@ class MedicalImageApp:
             )
 
             self.apply_pipeline_operation(
-                lambda img: local_histogram_equalization(img, block_size),
+                lambda img: local_histogram_equalization_optimized(img, block_size),
                 f"Local Histogram Equalization (block size={block_size})"
             )
 
         except Exception as e:
             messagebox.showerror("Invalid Input", str(e))
-
 
     def apply_rotation(self):
         try:
@@ -944,6 +1018,10 @@ class MedicalImageApp:
             return
 
         self.current_processed = previous_image.copy()
+
+        self.zoom_factor = 1.0
+        self.zoom_label.configure(text="Zoom: 100%")
+
         self.show_fit_image(self.processed_image_view, self.current_processed)
         self.update_pipeline_log()
 
@@ -953,6 +1031,18 @@ class MedicalImageApp:
         else:
             self.status_label.configure(text=f"Undid: {removed_operation}")
 
+    def warn_if_large_image(self, image, operation_name):
+        h, w = image.shape[:2]
+        total_pixels = h * w
+
+        if total_pixels > 1_000_000:
+            return messagebox.askyesno(
+                "Large Image Warning",
+                f"{operation_name} may take time on this image "
+                f"({w} x {h} pixels).\n\nDo you want to continue?"
+            )
+
+        return True
 
     def reset_pipeline(self):
         if not self.pipeline.has_image():
