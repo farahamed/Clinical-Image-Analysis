@@ -1,4 +1,5 @@
-from gui import MedicalImageApp
+from gui.gui import MedicalImageApp
 
-app = MedicalImageApp()
-app.run()
+if __name__ == "__main__":
+    app = MedicalImageApp()
+    app.run()
