@@ -187,9 +187,7 @@ class MedicalImageApp:
         ).pack(pady=4, padx=10)
 
         ctk.CTkFrame(self.left_panel, height=2, fg_color="#444").pack(fill="x", padx=10, pady=10)
-
-        ctk.CTkFrame(self.left_panel, height=2, fg_color="#444").pack(fill="x", padx=10, pady=10)
-
+       
         ctk.CTkLabel(
             self.left_panel,
             text="PIPELINE MODE",
@@ -283,172 +281,233 @@ class MedicalImageApp:
     def build_tabs(self):
         self.tab_view = ctk.CTkTabview(self.right_area)
         self.tab_view.pack(fill="both", expand=True)
+
         self.tab_view.add("Image Viewer")
-        self.tab_view.add("Operations")
         self.tab_view.add("Pipeline Log")
         self.tab_view.add("Metadata")
 
         self.build_image_viewer_tab()
-        self.build_operations_tab()
         self.build_pipeline_log_tab()
         self.build_metadata_tab()
 
     def build_image_viewer_tab(self):
         viewer_tab = self.tab_view.tab("Image Viewer")
-        images_frame = ctk.CTkFrame(viewer_tab)
-        images_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Main vertical layout:
+        # top = images, bottom = operation controls
+        main_viewer_frame = ctk.CTkFrame(viewer_tab)
+        main_viewer_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        images_frame = ctk.CTkFrame(main_viewer_frame)
+        images_frame.pack(fill="both", expand=True, padx=5, pady=(5, 8))
 
         original_frame = ctk.CTkFrame(images_frame)
         original_frame.pack(side="left", fill="both", expand=True, padx=5)
-        ctk.CTkLabel(original_frame, text="Original Image",
-                     font=ctk.CTkFont(size=13, weight="bold")).pack(pady=5)
-        self.original_image_view = ScrollableImageView(original_frame, height=450, width=450)
-        self.original_image_view.pack(fill="both", expand=True, padx=5, pady=5)
-
-      
-        processed_frame = ctk.CTkFrame(images_frame)
-        processed_frame.pack(side="right", fill="both", expand=True, padx=5)
-        ctk.CTkLabel(processed_frame, text="Processed Image",
-                     font=ctk.CTkFont(size=13, weight="bold")).pack(pady=5)
-        self.processed_image_view = ScrollableImageView(processed_frame, height=450, width=450)
-        self.processed_image_view.pack(fill="both", expand=True, padx=5, pady=5)
-
-
-    def build_operations_tab(self):
-        operations_tab = self.tab_view.tab("Operations")
-
-        scroll_frame = ctk.CTkScrollableFrame(operations_tab)
-        scroll_frame.pack(fill="both", expand=True, padx=15, pady=15)
 
         ctk.CTkLabel(
-            scroll_frame,
-            text="Spatial Enhancement Operations",
-            font=ctk.CTkFont(size=16, weight="bold")
-        ).pack(pady=(5, 15))
+            original_frame,
+            text="Original Image",
+            font=ctk.CTkFont(size=13, weight="bold")
+        ).pack(pady=5)
 
-        # ---------------- Filtering ----------------
-        filtering_frame = ctk.CTkFrame(scroll_frame)
-        filtering_frame.pack(fill="x", padx=10, pady=8)
+        self.original_image_view = ScrollableImageView(
+            original_frame,
+            height=360,
+            width=450
+        )
+        self.original_image_view.pack(fill="both", expand=True, padx=5, pady=5)
+
+        processed_frame = ctk.CTkFrame(images_frame)
+        processed_frame.pack(side="right", fill="both", expand=True, padx=5)
+
+        ctk.CTkLabel(
+            processed_frame,
+            text="Processed Image",
+            font=ctk.CTkFont(size=13, weight="bold")
+        ).pack(pady=5)
+
+        self.processed_image_view = ScrollableImageView(
+            processed_frame,
+            height=360,
+            width=450
+        )
+        self.processed_image_view.pack(fill="both", expand=True, padx=5, pady=5)
+
+        # Operation controls are now visible while the user sees the image.
+        self.build_operation_controls(main_viewer_frame)
+
+    def build_operation_controls(self, parent):
+        controls_frame = ctk.CTkFrame(parent)
+        controls_frame.pack(fill="x", padx=5, pady=(0, 5))
+
+        ctk.CTkLabel(
+            controls_frame,
+            text="Operations",
+            font=ctk.CTkFont(size=15, weight="bold")
+        ).pack(pady=(8, 4))
+
+        # Use columns so everything is visible under the images.
+        sections_frame = ctk.CTkFrame(controls_frame, fg_color="transparent")
+        sections_frame.pack(fill="x", padx=8, pady=5)
+
+        sections_frame.grid_columnconfigure(0, weight=1)
+        sections_frame.grid_columnconfigure(1, weight=1)
+        sections_frame.grid_columnconfigure(2, weight=1)
+
+        # ---------------- Filtering section ----------------
+        filtering_frame = ctk.CTkFrame(sections_frame)
+        filtering_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
 
         ctk.CTkLabel(
             filtering_frame,
             text="Filtering",
-            font=ctk.CTkFont(size=14, weight="bold")
-        ).pack(pady=8)
+            font=ctk.CTkFont(size=13, weight="bold")
+        ).pack(pady=(8, 6))
 
-        self.kernel_size_entry = ctk.CTkEntry(
+        ctk.CTkLabel(
             filtering_frame,
-            placeholder_text="Kernel size, e.g. 3 or 5"
-        )
-        self.kernel_size_entry.pack(padx=10, pady=4, fill="x")
+            text="Kernel Size (odd number: 3, 5, 7...)",
+            font=ctk.CTkFont(size=11)
+        ).pack(anchor="w", padx=10)
+
+        self.kernel_size_entry = ctk.CTkEntry(filtering_frame)
+        self.kernel_size_entry.pack(padx=10, pady=(2, 6), fill="x")
         self.kernel_size_entry.insert(0, "3")
 
-        self.gaussian_sigma_entry = ctk.CTkEntry(
+        ctk.CTkLabel(
             filtering_frame,
-            placeholder_text="Gaussian sigma, e.g. 1.0"
-        )
-        self.gaussian_sigma_entry.pack(padx=10, pady=4, fill="x")
+            text="Gaussian Sigma / Standard Deviation",
+            font=ctk.CTkFont(size=11)
+        ).pack(anchor="w", padx=10)
+
+        self.gaussian_sigma_entry = ctk.CTkEntry(filtering_frame)
+        self.gaussian_sigma_entry.pack(padx=10, pady=(2, 6), fill="x")
         self.gaussian_sigma_entry.insert(0, "1.0")
 
-        filter_buttons = ctk.CTkFrame(filtering_frame, fg_color="transparent")
-        filter_buttons.pack(pady=8)
+        buttons_row_1 = ctk.CTkFrame(filtering_frame, fg_color="transparent")
+        buttons_row_1.pack(pady=3)
 
         ctk.CTkButton(
-            filter_buttons,
-            text="Average Filter",
+            buttons_row_1,
+            text="Average",
             command=self.apply_average_filter,
-            width=140
-        ).pack(side="left", padx=4)
+            width=90
+        ).pack(side="left", padx=3)
 
         ctk.CTkButton(
-            filter_buttons,
-            text="Gaussian Filter",
+            buttons_row_1,
+            text="Gaussian",
             command=self.apply_gaussian_filter,
-            width=140
-        ).pack(side="left", padx=4)
+            width=90
+        ).pack(side="left", padx=3)
+
+        buttons_row_2 = ctk.CTkFrame(filtering_frame, fg_color="transparent")
+        buttons_row_2.pack(pady=(3, 8))
 
         ctk.CTkButton(
-            filter_buttons,
-            text="Median Filter",
+            buttons_row_2,
+            text="Median",
             command=self.apply_median_filter,
-            width=140
-        ).pack(side="left", padx=4)
+            width=90
+        ).pack(side="left", padx=3)
 
         ctk.CTkButton(
-            filtering_frame,
-            text="Sobel Edge Detection",
+            buttons_row_2,
+            text="Sobel Edges",
             command=self.apply_sobel_edges,
-            width=220
-        ).pack(pady=8)
+            width=90
+        ).pack(side="left", padx=3)
 
-        # ---------------- Histogram ----------------
-        histogram_frame = ctk.CTkFrame(scroll_frame)
-        histogram_frame.pack(fill="x", padx=10, pady=8)
+        # ---------------- Histogram section ----------------
+        histogram_frame = ctk.CTkFrame(sections_frame)
+        histogram_frame.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
 
         ctk.CTkLabel(
             histogram_frame,
-            text="Local Histogram Equalization",
-            font=ctk.CTkFont(size=14, weight="bold")
-        ).pack(pady=8)
+            text="Histogram",
+            font=ctk.CTkFont(size=13, weight="bold")
+        ).pack(pady=(8, 6))
 
-        self.block_size_entry = ctk.CTkEntry(
+        ctk.CTkLabel(
             histogram_frame,
-            placeholder_text="Block size, e.g. 8 or 16"
-        )
-        self.block_size_entry.pack(padx=10, pady=4, fill="x")
+            text="Local Equalization Block Size",
+            font=ctk.CTkFont(size=11)
+        ).pack(anchor="w", padx=10)
+
+        self.block_size_entry = ctk.CTkEntry(histogram_frame)
+        self.block_size_entry.pack(padx=10, pady=(2, 6), fill="x")
         self.block_size_entry.insert(0, "8")
+
+        ctk.CTkLabel(
+            histogram_frame,
+            text="Example: 8, 16, 32",
+            font=ctk.CTkFont(size=10),
+            text_color="#999"
+        ).pack(anchor="w", padx=10, pady=(0, 6))
 
         ctk.CTkButton(
             histogram_frame,
             text="Apply Local Equalization",
             command=self.apply_local_equalization,
-            width=220
-        ).pack(pady=8)
+            width=180
+        ).pack(pady=(8, 10))
 
-        # ---------------- Geometry ----------------
-        geometry_frame = ctk.CTkFrame(scroll_frame)
-        geometry_frame.pack(fill="x", padx=10, pady=8)
+        # ---------------- Geometry section ----------------
+        geometry_frame = ctk.CTkFrame(sections_frame)
+        geometry_frame.grid(row=0, column=2, sticky="nsew", padx=5, pady=5)
 
         ctk.CTkLabel(
             geometry_frame,
-            text="Geometric Transformations",
-            font=ctk.CTkFont(size=14, weight="bold")
-        ).pack(pady=8)
+            text="Geometry",
+            font=ctk.CTkFont(size=13, weight="bold")
+        ).pack(pady=(8, 6))
 
-        self.rotation_angle_entry = ctk.CTkEntry(
+        ctk.CTkLabel(
             geometry_frame,
-            placeholder_text="Rotation angle in degrees, e.g. 30"
-        )
-        self.rotation_angle_entry.pack(padx=10, pady=4, fill="x")
+            text="Rotation Angle (degrees)",
+            font=ctk.CTkFont(size=11)
+        ).pack(anchor="w", padx=10)
+
+        self.rotation_angle_entry = ctk.CTkEntry(geometry_frame)
+        self.rotation_angle_entry.pack(padx=10, pady=(2, 6), fill="x")
         self.rotation_angle_entry.insert(0, "30")
 
-        ctk.CTkButton(
+        ctk.CTkLabel(
             geometry_frame,
-            text="Rotate",
-            command=self.apply_rotation,
-            width=220
-        ).pack(pady=8)
+            text="Shear X Factor",
+            font=ctk.CTkFont(size=11)
+        ).pack(anchor="w", padx=10)
 
-        self.shear_x_entry = ctk.CTkEntry(
-            geometry_frame,
-            placeholder_text="Shear X, e.g. 0.2"
-        )
-        self.shear_x_entry.pack(padx=10, pady=4, fill="x")
+        self.shear_x_entry = ctk.CTkEntry(geometry_frame)
+        self.shear_x_entry.pack(padx=10, pady=(2, 6), fill="x")
         self.shear_x_entry.insert(0, "0.2")
 
-        self.shear_y_entry = ctk.CTkEntry(
+        ctk.CTkLabel(
             geometry_frame,
-            placeholder_text="Shear Y, e.g. 0.0"
-        )
-        self.shear_y_entry.pack(padx=10, pady=4, fill="x")
+            text="Shear Y Factor",
+            font=ctk.CTkFont(size=11)
+        ).pack(anchor="w", padx=10)
+
+        self.shear_y_entry = ctk.CTkEntry(geometry_frame)
+        self.shear_y_entry.pack(padx=10, pady=(2, 6), fill="x")
         self.shear_y_entry.insert(0, "0.0")
 
+        geometry_buttons = ctk.CTkFrame(geometry_frame, fg_color="transparent")
+        geometry_buttons.pack(pady=(3, 8))
+
         ctk.CTkButton(
-            geometry_frame,
+            geometry_buttons,
+            text="Rotate",
+            command=self.apply_rotation,
+            width=90
+        ).pack(side="left", padx=3)
+
+        ctk.CTkButton(
+            geometry_buttons,
             text="Shear",
             command=self.apply_shearing,
-            width=220
-        ).pack(pady=8)
+            width=90
+        ).pack(side="left", padx=3)
 
     def build_pipeline_log_tab(self):
         log_tab = self.tab_view.tab("Pipeline Log")
@@ -502,7 +561,6 @@ class MedicalImageApp:
         self.metadata_box.delete("1.0", "end")
         self.metadata_box.insert("1.0", text)
         self.metadata_box.configure(state="disabled")
-        self.tab_view.set("Metadata")
 
     def is_pipeline_enabled(self):
         return self.pipeline_switch.get() == 1
@@ -557,9 +615,7 @@ class MedicalImageApp:
 
     def apply_pipeline_operation(self, operation_function, operation_name):
         """
-        Central function for your task.
-
-        All operation buttons should call this function.
+        Central function for all non-zoom processing operations.
 
         It decides whether to use:
         - original image, if pipeline mode is OFF
@@ -575,9 +631,10 @@ class MedicalImageApp:
 
             self.current_processed = self.pipeline.apply_result(result, operation_name)
 
-            self.show_actual_image(self.processed_image_view, self.current_processed)
-            self.update_pipeline_log()
+            # Use fit display for normal operations so the result does not look zoomed in.
+            self.show_fit_image(self.processed_image_view, self.current_processed)
 
+            self.update_pipeline_log()
             self.status_label.configure(text=f"Applied: {operation_name}")
 
         except Exception as e:
@@ -654,6 +711,7 @@ class MedicalImageApp:
 
             self.zoom_factor = 1.0
             self.zoom_label.configure(text="Zoom: 100%")
+            self.tab_view.set("Image Viewer")
             self.status_label.configure(text="Image loaded")
 
         except Exception as e:
@@ -695,20 +753,19 @@ class MedicalImageApp:
         method = "nearest" if self.zoom_method.get() == "Nearest Neighbor" else "bilinear"
 
         try:
-            input_image = self.pipeline.get_input_image(self.is_pipeline_enabled())
+            # Zoom the current processed image for viewing only.
+            # Do not save zoom into the pipeline history.
+            input_image = self.pipeline.get_current()
             zoomed = zoom_image(input_image, self.zoom_factor, method)
 
-            operation_name = f"Zoom {int(self.zoom_factor * 100)}% ({method})"
-            self.current_processed = self.pipeline.apply_result(zoomed, operation_name)
+            self.show_actual_image(self.processed_image_view, zoomed)
 
-            self.show_actual_image(self.processed_image_view, self.current_processed)
-            self.update_pipeline_log()
-
-            self.status_label.configure(text=operation_name)
+            self.status_label.configure(
+                text=f"Viewing zoom: {int(self.zoom_factor * 100)}% ({method})"
+            )
 
         except Exception as e:
             messagebox.showerror("Zoom Error", f"Could not apply zoom.\nReason: {str(e)}")
-
 
     def zoom_in(self):
         if self.current_original is None:
@@ -737,7 +794,7 @@ class MedicalImageApp:
         self.show_fit_image(self.processed_image_view, self.current_processed)
 
         self.status_label.configure(text="Zoom view reset")
-
+        
     def apply_average_filter(self):
         try:
             kernel_size = self.get_valid_odd_integer(
@@ -869,7 +926,7 @@ class MedicalImageApp:
             return
 
         self.current_processed = previous_image.copy()
-        self.show_actual_image(self.processed_image_view, self.current_processed)
+        self.show_fit_image(self.processed_image_view, self.current_processed)
         self.update_pipeline_log()
 
         if removed_operation is None:
