@@ -6,9 +6,13 @@ import numpy as np
 from image_io.image_loader import load_regular_image, load_dicom_image, get_dicom_tag
 from image_io.metadata import build_metadata_text
 from processing.interpolation.zoom import zoom_image
-
 from pipeline.pipeline_manager import PipelineManager
-
+from gui.widgets.fft_viewer import FFTViewer
+from gui.widgets.notch_panel import NotchPanel
+from processing.frequency.reconstruction import reconstruct_image
+from processing.frequency.fft_utils import compute_fft
+from processing.frequency.spectrum_display import magnitude_spectrum
+from processing.frequency.notch_filters import apply_notch_filter
 from processing.filtering.linear_filters import apply_average, apply_gaussian
 from processing.filtering.nonlinear_filters import median_filter
 from processing.filtering.edge_detection import apply_edge_detection
@@ -21,6 +25,10 @@ from processing.noise.noise import add_gaussian_noise, add_uniform_noise
 from processing.roi.roi_tool import extract_roi, draw_roi_on_image
 # Add this with your other imports at the top of gui.py
 from processing.roi.roi_stats_window import show_roi_statistics
+from processing.frequency.frequency_template_matching import (
+    fourier_cross_correlate,
+    fourier_cross_correlate_normalized,
+)
 
 
 ctk.set_appearance_mode("dark")
@@ -55,6 +63,7 @@ class ScrollableImageView(ctk.CTkFrame):
         self.fit_mode = True
         self.photo = None  
         self._resize_job = None
+
 
         self.canvas.bind("<ButtonPress-1>", self._on_drag_start)
         self.canvas.bind("<B1-Motion>", self._on_drag_move)
@@ -153,16 +162,62 @@ class ScrollableImageView(ctk.CTkFrame):
         self.canvas.scan_dragto(event.x, event.y, gain=1)
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Helper function for Template Matching tab
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _tm_draw_on_canvas(canvas, image_array):
+    """
+    Fit image_array into canvas, return (photo, scale, ox, oy) for coordinate mapping.
+    Returns None if canvas not yet realized.
+    """
+    cw = canvas.winfo_width()
+    ch = canvas.winfo_height()
+    if cw <= 1 or ch <= 1:
+        return None
+
+    ih, iw = image_array.shape[:2]
+    scale = min(cw / iw, ch / ih)
+    dw, dh = int(iw * scale), int(ih * scale)
+    ox = (cw - dw) // 2
+    oy = (ch - dh) // 2
+
+    if image_array.ndim == 2:
+        pil_img = Image.fromarray(np.clip(image_array, 0, 255).astype(np.uint8), mode="L")
+    else:
+        pil_img = Image.fromarray(np.clip(image_array, 0, 255).astype(np.uint8))
+
+    pil_img = pil_img.resize((dw, dh), Image.LANCZOS)
+    return ImageTk.PhotoImage(pil_img), scale, ox, oy
+
+
 class MedicalImageApp:
     def __init__(self):
         self.current_original = None
         self.current_processed = None
+        self._tm_target_image = None
         self.zoom_factor = 1.0
 
         self.roi_start = None
         self.roi_end   = None
         self.roi_rect  = None
 
+        # Template Matching state
+        self._tm_template       = None
+        self._tm_crop_start     = None
+        self._tm_rect_id        = None
+        self._tm_scale          = 1.0
+        self._tm_offset_x       = 0
+        self._tm_offset_y       = 0
+        self._tm_photo_crop     = None
+        self._tm_photo_result   = None
+        self._tm_photo_corr     = None
+        self._tm_photo_template = None
+        self._tm_photo_target   = None
+        self._tm_use_target_compare = False
+
+        self.fft_shifted = None
+        self.notch_points = []
         self.pipeline = PipelineManager()
 
         self.app = ctk.CTk()
@@ -308,10 +363,15 @@ class MedicalImageApp:
         self.tab_view.add("Image Viewer")
         self.tab_view.add("Pipeline Log")
         self.tab_view.add("Metadata")
+        self.tab_view.add("Template Matching")
+        self.tab_view.add("Frequency Domain")
+
 
         self.build_image_viewer_tab()
         self.build_pipeline_log_tab()
         self.build_metadata_tab()
+        self.build_template_matching_tab()
+        self.build_frequency_tab()
 
     def build_image_viewer_tab(self):
         viewer_tab = self.tab_view.tab("Image Viewer")
@@ -686,7 +746,48 @@ class MedicalImageApp:
         zoomed = zoom_image(image_array, display_scale, method)
 
         viewer.set_image(zoomed, fit_to_window=False)            
+    
+    def build_frequency_tab(self):
+        tab= self.tab_view.tab("Frequency Domain")
+        
+        #main controller
+        main_frame = ctk.CTkFrame(tab)
+        main_frame.pack(fill="both", expand=True)
 
+        #Left: Spectrum viewer
+        left_frame = ctk.CTkFrame(main_frame)
+        left_frame.pack(side="left", fill="both", expand=True)
+
+        #FFT label
+        ctk.CTkLabel(
+            left_frame,
+            text="Magnitude Spectrum",
+            font=ctk.CTkFont(size=13, weight="bold")
+        ).pack(pady=5)
+
+        #FFT viewer
+        self.fft_viewer = FFTViewer(left_frame, self.on_fft_click)
+        self.fft_viewer.pack(fill="both", expand=True, padx=10, pady=10)
+
+        #RIGHT: Notch filter controls
+        right_frame = ctk.CTkFrame(main_frame, width=420)
+        right_frame.pack(side="right", fill="y", padx=10, pady=10)
+
+        #Reconstructed image label
+        ctk.CTkLabel(
+            right_frame,
+            text="Reconstructed Image",
+            font=ctk.CTkFont(size=13, weight="bold")
+        ).pack(pady=5)
+
+        #Reconstructed image viewer
+        self.frequency_result_view = ScrollableImageView(right_frame,width=380, height=300)
+        self.frequency_result_view.pack(fill="both", expand=True, padx=10, pady=10)
+
+        #Notch Panel
+        self.notch_panel = NotchPanel(right_frame, self.apply_notch_filter_gui, self.clear_notch_points)
+        self.notch_panel.pack(fill="x", padx=10, pady=10)
+    
     def show_metadata_text(self, text):
         self.metadata_box.configure(state="normal")
         self.metadata_box.delete("1.0", "end")
@@ -810,6 +911,16 @@ class MedicalImageApp:
             if file_path.lower().endswith('.dcm'):
                 pixel_array, dicom_data = load_dicom_image(file_path)
                 self.current_original = pixel_array
+                self.fft_shifted = compute_fft(self.current_original)
+
+                spectrum = magnitude_spectrum(self.fft_shifted)
+
+                self.notch_points = []
+
+                if hasattr(self, "fft_viewer"):
+                   self.fft_viewer.set_spectrum(spectrum)
+
+
                 self.current_processed = pixel_array.copy()
 
                 self.pipeline.set_original(pixel_array)
@@ -834,6 +945,11 @@ class MedicalImageApp:
             elif file_path.lower().endswith(('.jpg', '.jpeg', '.bmp')):
                 image_array = load_regular_image(file_path)
                 self.current_original = image_array
+                self.fft_shifted = compute_fft(self.current_original)
+                spectrum = magnitude_spectrum(self.fft_shifted)
+                self.notch_points = []
+                if hasattr(self, "fft_viewer"):
+                    self.fft_viewer.set_spectrum(spectrum)
                 self.current_processed = image_array.copy()
 
                 self.pipeline.set_original(image_array)
@@ -865,6 +981,53 @@ class MedicalImageApp:
         except Exception as e:
             messagebox.showerror("Error", f"Could not load image.\nReason: {str(e)}")
             self.status_label.configure(text="Error loading image")
+
+    def _tm_load_target_image(self):
+        file_path = filedialog.askopenfilename(
+            title="Choose a Target Image for Template Matching",
+            filetypes=[
+                ("Medical Images", "*.jpg *.jpeg *.bmp *.dcm"),
+                ("JPEG Images", "*.jpg *.jpeg"),
+                ("BMP Images", "*.bmp"),
+                ("DICOM Images", "*.dcm"),
+                ("All Files", "*.*")
+            ]
+        )
+        if not file_path:
+            return
+
+        try:
+            if file_path.lower().endswith('.dcm'):
+                pixel_array, _ = load_dicom_image(file_path)
+                target_image = pixel_array
+            elif file_path.lower().endswith(('.jpg', '.jpeg', '.bmp')):
+                target_image = load_regular_image(file_path)
+            else:
+                messagebox.showerror("Unsupported Format", "Please use JPEG, BMP, or DICOM files only.")
+                return
+
+            self._tm_target_image = target_image
+            self.tab_view.set("Template Matching")
+            self._tm_redraw_crop_canvas()
+            self._tm_result_canvas.delete("all")
+            self._tm_corr_canvas.delete("all")
+            self._tm_result_label.configure(text="Target image loaded. Turn on 'Use target image' if you want to compare against it.")
+            self.status_label.configure(text="Target image loaded for template matching")
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not load target image.\nReason: {str(e)}")
+
+    def _tm_on_use_target_toggle(self):
+        self._tm_use_target_compare = bool(self._tm_use_target_toggle.get())
+        if self._tm_use_target_compare and self._tm_target_image is None:
+            messagebox.showinfo(
+                "Target Image Missing",
+                "Load a target image first, or turn the toggle off to compare against the same source image."
+            )
+            try:
+                self._tm_use_target_toggle.deselect()
+            except Exception:
+                pass
+            self._tm_use_target_compare = False
 
     def save_image(self):
         self.current_processed = self.pipeline.get_current()
@@ -1132,7 +1295,503 @@ class MedicalImageApp:
         self.zoom_factor = 1.0
         self.zoom_label.configure(text="Zoom: 100%")
 
-        self.status_label.configure(text="Reset to original")            
+        self.status_label.configure(text="Reset to original")
+
+    # ======================================================================
+    #   TEMPLATE MATCHING TAB
+    # ======================================================================
+
+    def build_template_matching_tab(self):
+        """
+        Layout of the Template Matching tab
+        ────────────────────────────────────
+        Left half  → interactive crop canvas (rubber-band selection on the image)
+        Right half → result viewer (original + bounding box) + correlation map
+        """
+        tab = self.tab_view.tab("Template Matching")
+
+        # ── outer two-column frame ───────────────────────────────────────────────
+        outer = ctk.CTkFrame(tab)
+        outer.pack(fill="both", expand=True, padx=8, pady=8)
+        outer.columnconfigure(0, weight=1)
+        outer.columnconfigure(1, weight=1)
+        outer.rowconfigure(0, weight=1)
+
+        # ── LEFT — crop panel ───────────────────────────────────────────────────
+        left_panel = ctk.CTkFrame(outer)
+        left_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        left_panel.rowconfigure(1, weight=1)
+        left_panel.columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            left_panel, text="Step 1 — Draw crop rectangle on the image",
+            font=ctk.CTkFont(size=12, weight="bold")
+        ).grid(row=0, column=0, columnspan=2, pady=(6, 2), padx=6, sticky="w")
+
+        # Canvas that shows the image and lets user draw a rectangle
+        self._tm_crop_canvas = tk.Canvas(left_panel, bg="#2b2b2b", highlightthickness=0)
+        self._tm_crop_canvas.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=6, pady=4)
+
+        self._tm_crop_canvas.bind("<ButtonPress-1>",   self._tm_on_press)
+        self._tm_crop_canvas.bind("<B1-Motion>",        self._tm_on_drag)
+        self._tm_crop_canvas.bind("<ButtonRelease-1>",  self._tm_on_release)
+        self._tm_crop_canvas.bind("<Configure>",        self._tm_redraw_crop_canvas)
+
+        # Template preview strip
+        ctk.CTkLabel(
+            left_panel, text="Cropped template:",
+            font=ctk.CTkFont(size=11), text_color="#aaa"
+        ).grid(row=2, column=0, sticky="w", padx=8, pady=(4, 0))
+
+        self._tm_template_preview = tk.Canvas(
+            left_panel, bg="#1e1e1e", height=70, highlightthickness=1,
+            highlightbackground="#555"
+        )
+        self._tm_template_preview.grid(row=3, column=0, columnspan=2,
+                                       sticky="ew", padx=6, pady=(0, 4))
+
+        self._tm_info_label = ctk.CTkLabel(
+            left_panel, text="No template selected yet.",
+            font=ctk.CTkFont(size=11), text_color="#888"
+        )
+        self._tm_info_label.grid(row=4, column=0, columnspan=2,
+                                  sticky="w", padx=8, pady=(0, 2))
+
+        # Action buttons
+        btn_row = ctk.CTkFrame(left_panel, fg_color="transparent")
+        btn_row.grid(row=5, column=0, columnspan=2, pady=6, padx=6, sticky="ew")
+
+        ctk.CTkButton(
+            btn_row, text="Run Cross-Correlation",
+            command=self._tm_run,
+            height=36, font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color="#1a5276", hover_color="#154360"
+        ).pack(side="left", expand=True, fill="x", padx=(0, 4))
+
+        ctk.CTkButton(
+            btn_row, text="Load Target Image",
+            command=self._tm_load_target_image,
+            height=36, font=ctk.CTkFont(size=12),
+            fg_color="#2d6a2d", hover_color="#1f4f1f"
+        ).pack(side="left", expand=True, fill="x", padx=(0, 4))
+
+        self._tm_use_target_toggle = ctk.CTkSwitch(
+            btn_row,
+            text="Use target image",
+            command=self._tm_on_use_target_toggle
+        )
+        self._tm_use_target_toggle.pack(side="left", padx=(0, 4))
+
+        ctk.CTkButton(
+            btn_row, text="Clear",
+            command=self._tm_clear,
+            height=36, font=ctk.CTkFont(size=12),
+            fg_color="#555", hover_color="#444"
+        ).pack(side="left", expand=True, fill="x")
+
+        # ── RIGHT — result panel ─────────────────────────────────────────────────
+        right_panel = ctk.CTkFrame(outer)
+        right_panel.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
+        right_panel.rowconfigure(1, weight=3)
+        right_panel.rowconfigure(3, weight=2)
+        right_panel.columnconfigure(0, weight=1)
+        right_panel.columnconfigure(1, weight=0)
+
+        ctk.CTkLabel(
+            right_panel, text="Step 2 — Match result (bounding box in red)",
+            font=ctk.CTkFont(size=12, weight="bold")
+        ).grid(row=0, column=0, pady=(6, 2), padx=6, sticky="w")
+
+        self._tm_result_canvas = tk.Canvas(right_panel, bg="#2b2b2b", highlightthickness=0)
+        self._tm_result_canvas.grid(row=1, column=0, sticky="nsew", padx=6, pady=4)
+
+        ctk.CTkLabel(
+            right_panel, text="Correlation map (brighter = better match):",
+            font=ctk.CTkFont(size=11), text_color="#aaa"
+        ).grid(row=2, column=0, sticky="w", padx=8, pady=(4, 0))
+        # Toggle: colored heatmap vs grayscale
+        self._tm_color_toggle = ctk.CTkSwitch(
+            right_panel, text="Colored heatmap"
+        )
+        try:
+            self._tm_color_toggle.select()
+        except Exception:
+            pass
+        self._tm_color_toggle.grid(row=2, column=1, sticky="e", padx=(0, 8), pady=(4, 0))
+        self._tm_corr_canvas = tk.Canvas(
+            right_panel, bg="#1e1e1e", height=110, highlightthickness=1,
+            highlightbackground="#555"
+        )
+        self._tm_corr_canvas.grid(row=3, column=0, sticky="nsew", padx=6, pady=(0, 6))
+
+        self._tm_result_info_frame = ctk.CTkFrame(right_panel, fg_color="transparent")
+        self._tm_result_info_frame.grid(row=4, column=0, sticky="ew", padx=8, pady=(0, 6))
+        self._tm_result_info_frame.columnconfigure(0, weight=1)
+
+        self._tm_result_label = ctk.CTkLabel(
+            self._tm_result_info_frame,
+            text="Run matching to see results here.",
+            font=ctk.CTkFont(size=11),
+            text_color="#888",
+            wraplength=420,
+            justify="left"
+        )
+        self._tm_result_label.grid(row=0, column=0, sticky="w")
+
+        self._tm_score_label = ctk.CTkLabel(
+            self._tm_result_info_frame,
+            text="Best NCC Score: N/A",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#b7f3b7"
+        )
+        self._tm_score_label.grid(row=1, column=0, sticky="w", pady=(2, 0))
+
+    def _tm_redraw_crop_canvas(self, event=None):
+        """Redraw the crop canvas whenever it is resized or a new image is loaded."""
+        canvas = self._tm_crop_canvas
+        canvas.delete("all")
+
+        if self.current_original is None:
+            cw = canvas.winfo_width()
+            ch = canvas.winfo_height()
+            if cw > 1:
+                canvas.create_text(
+                    cw // 2, ch // 2,
+                    text="Load an image first, then draw a crop rectangle here.",
+                    fill="#aaaaaa", font=("Segoe UI", 11, "italic"),
+                    width=cw - 20
+                )
+            return
+
+        result = _tm_draw_on_canvas(canvas, self.current_original)
+        if result is None:
+            canvas.after(50, self._tm_redraw_crop_canvas)
+            return
+
+        photo, scale, ox, oy = result
+        self._tm_photo_crop = photo        # keep reference
+        self._tm_scale    = scale
+        self._tm_offset_x = ox
+        self._tm_offset_y = oy
+        canvas.create_image(ox, oy, anchor="nw", image=self._tm_photo_crop)
+        self._tm_rect_id  = None
+
+    def _tm_on_press(self, event):
+        """Record start of rubber-band rectangle."""
+        if self.current_original is None:
+            return
+        self._tm_crop_start = (event.x, event.y)
+        if self._tm_rect_id is not None:
+            self._tm_crop_canvas.delete(self._tm_rect_id)
+            self._tm_rect_id = None
+
+    def _tm_on_drag(self, event):
+        """Stretch the rubber-band rectangle while dragging."""
+        if self._tm_crop_start is None:
+            return
+        if self._tm_rect_id is not None:
+            self._tm_crop_canvas.delete(self._tm_rect_id)
+        x0, y0 = self._tm_crop_start
+        self._tm_rect_id = self._tm_crop_canvas.create_rectangle(
+            x0, y0, event.x, event.y,
+            outline="#00FF88", width=2, dash=(4, 2)
+        )
+
+    def _tm_on_release(self, event):
+        """
+        On mouse release: convert canvas coords → original image coords, crop template.
+        """
+        if self._tm_crop_start is None or self.current_original is None:
+            return
+
+        x0, y0 = self._tm_crop_start
+        x1, y1 = event.x, event.y
+        self._tm_crop_start = None
+
+        # Ensure x0 < x1, y0 < y1
+        cx0, cy0 = min(x0, x1), min(y0, y1)
+        cx1, cy1 = max(x0, x1), max(y0, y1)
+
+        # Map canvas coords back to original image coords
+        ox, oy = self._tm_offset_x, self._tm_offset_y
+        scale  = self._tm_scale
+        ih, iw = self.current_original.shape[:2]
+
+        img_x0 = int(np.clip((cx0 - ox) / scale, 0, iw - 1))
+        img_y0 = int(np.clip((cy0 - oy) / scale, 0, ih - 1))
+        img_x1 = int(np.clip((cx1 - ox) / scale, 0, iw))
+        img_y1 = int(np.clip((cy1 - oy) / scale, 0, ih))
+
+        if img_x1 - img_x0 < 2 or img_y1 - img_y0 < 2:
+            messagebox.showwarning(
+                "Template Too Small",
+                "The selected region is too small.\nPlease drag a larger rectangle."
+            )
+            return
+
+        self._tm_template = self.current_original[img_y0:img_y1, img_x0:img_x1]
+
+        # Show template preview
+        th, tw = self._tm_template.shape[:2]
+        self._tm_info_label.configure(
+            text=f"Template: {tw} × {th} px  (drag area in image coords: "
+                 f"x={img_x0}–{img_x1}, y={img_y0}–{img_y1})"
+        )
+
+        # Fit template into preview strip
+        prev_canvas = self._tm_template_preview
+        pw = prev_canvas.winfo_width()
+        ph = prev_canvas.winfo_height()
+        if pw <= 1:
+            pw, ph = 200, 70
+
+        t_scale = min(pw / tw, ph / th)
+        dw, dh  = max(1, int(tw * t_scale)), max(1, int(th * t_scale))
+        if self._tm_template.ndim == 2:
+            pil_t = Image.fromarray(
+                np.clip(self._tm_template, 0, 255).astype(np.uint8), mode="L"
+            )
+        else:
+            pil_t = Image.fromarray(
+                np.clip(self._tm_template, 0, 255).astype(np.uint8)
+            )
+        pil_t = pil_t.resize((dw, dh), Image.LANCZOS)
+        self._tm_photo_template = ImageTk.PhotoImage(pil_t)
+        prev_canvas.delete("all")
+        prev_canvas.create_image(pw // 2, ph // 2, anchor="center",
+                                  image=self._tm_photo_template)
+
+    def _tm_run(self):
+        """Run Fourier cross-correlation and display result + correlation map."""
+        if self._tm_template is None:
+            messagebox.showwarning(
+                "No Template",
+                "Please draw a crop rectangle on the image to select a template."
+            )
+            return
+
+        target_image = self.current_original
+        target_label = "same source image"
+        if self._tm_use_target_compare:
+            if self._tm_target_image is None:
+                messagebox.showwarning(
+                    "No Target Image",
+                    "Turn off 'Use target image' or load a target image first."
+                )
+                return
+            target_image = self._tm_target_image
+            target_label = "separate target image"
+
+        if target_image is None:
+            messagebox.showwarning("No Image", "Please load an image first.")
+            return
+
+        try:
+            self.status_label.configure(text="Running cross-correlation…")
+            self._tm_result_label.configure(text="Computing…")
+            self.app.update_idletasks()
+
+            # Use normalized cross-correlation for robustness on real images
+            result_img, norm_corr, (pr, pc), (th, tw) = fourier_cross_correlate_normalized(
+                target_image, self._tm_template
+            )
+
+            # ── Draw result image ────────────────────────────────────────────────
+            res_canvas = self._tm_result_canvas
+            res_canvas.delete("all")
+            out = _tm_draw_on_canvas(res_canvas, result_img)
+            if out is not None:
+                photo, _, _, _ = out
+                self._tm_photo_result = photo
+                res_canvas.create_image(0, 0, anchor="nw", image=self._tm_photo_result)
+                # Re-draw properly centred
+                cw = res_canvas.winfo_width()
+                ch = res_canvas.winfo_height()
+                ih2, iw2 = result_img.shape[:2]
+                s = min(cw / iw2, ch / ih2)
+                dw2, dh2 = int(iw2 * s), int(ih2 * s)
+                ox2, oy2 = (cw - dw2) // 2, (ch - dh2) // 2
+                pil_r = Image.fromarray(result_img).resize((dw2, dh2), Image.LANCZOS)
+                self._tm_photo_result = ImageTk.PhotoImage(pil_r)
+                res_canvas.delete("all")
+                res_canvas.create_image(ox2, oy2, anchor="nw",
+                                        image=self._tm_photo_result)
+
+            # ── Draw correlation map
+            corr_canvas = self._tm_corr_canvas
+            corr_canvas.delete("all")
+            # Valid region size: out_h = ih - th + 1, out_w = iw - tw + 1
+            ih_full, iw_full = target_image.shape[:2]
+            out_h = max(1, ih_full - th + 1)
+            out_w = max(1, iw_full - tw + 1)
+            corr_valid = norm_corr[:out_h, :out_w]
+            # Best (maximum) normalized cross-correlation score in the valid region
+            try:
+                max_score = float(np.max(corr_valid))
+            except Exception:
+                max_score = float('nan')
+            # Create a colored heatmap (RGB) or grayscale depending on toggle.
+            colored = True
+            try:
+                colored = bool(self._tm_color_toggle.get())
+            except Exception:
+                colored = True
+
+            # Normalize corr_valid first.
+            minv = float(np.min(corr_valid))
+            maxv = float(np.max(corr_valid))
+            if maxv - minv > 0:
+                norm = (corr_valid - minv) / (maxv - minv)
+            else:
+                norm = np.zeros_like(corr_valid)
+            if colored:
+                # Try matplotlib colormap first; fall back to a simple jet-like numpy map.
+                try:
+                    import matplotlib.cm as cm
+                    cmap = cm.get_cmap('viridis')
+                    rgba = cmap(norm)
+                    rgb = (rgba[..., :3] * 255).astype(np.uint8)
+                except Exception:
+                    v = norm
+                    r = np.clip(1.5 - np.abs(4 * v - 3), 0, 1)
+                    g = np.clip(1.5 - np.abs(4 * v - 2), 0, 1)
+                    b = np.clip(1.5 - np.abs(4 * v - 1), 0, 1)
+                    rgb = np.stack([r, g, b], axis=-1)
+                    rgb = (rgb * 255).astype(np.uint8)
+
+                corr_out = _tm_draw_on_canvas(corr_canvas, rgb)
+                if corr_out is not None:
+                    _, sc, ocx, ocy = corr_out
+                    ccw = corr_canvas.winfo_width()
+                    cch = corr_canvas.winfo_height()
+                    ch_h, ch_w = rgb.shape[:2]
+                    sc2 = min(ccw / ch_w, cch / ch_h)
+                    cdw, cdh = int(ch_w * sc2), int(ch_h * sc2)
+                    cocx, cocy = (ccw - cdw) // 2, (cch - cdh) // 2
+                    pil_c = Image.fromarray(rgb, mode="RGB").resize((cdw, cdh), Image.LANCZOS)
+                    self._tm_photo_corr = ImageTk.PhotoImage(pil_c)
+                    corr_canvas.delete("all")
+                    corr_canvas.create_image(cocx, cocy, anchor="nw", image=self._tm_photo_corr)
+                    # Draw peak marker on the displayed valid-region
+                    try:
+                        disp_x = cocx + int(pc * sc2)
+                        disp_y = cocy + int(pr * sc2)
+                        size = max(3, int(4 * sc2))
+                        corr_canvas.create_line(disp_x - size, disp_y, disp_x + size, disp_y, fill='lime', width=2)
+                        corr_canvas.create_line(disp_x, disp_y - size, disp_x, disp_y + size, fill='lime', width=2)
+                    except Exception:
+                        pass
+            else:
+                corr_display = (norm * 255).astype(np.uint8)
+                corr_out = _tm_draw_on_canvas(corr_canvas, corr_display)
+                if corr_out is not None:
+                    _, sc, ocx, ocy = corr_out
+                    ccw = corr_canvas.winfo_width()
+                    cch = corr_canvas.winfo_height()
+                    ch_h, ch_w = corr_display.shape
+                    sc2 = min(ccw / ch_w, cch / ch_h)
+                    cdw, cdh = int(ch_w * sc2), int(ch_h * sc2)
+                    cocx, cocy = (ccw - cdw) // 2, (cch - cdh) // 2
+                    pil_c = Image.fromarray(corr_display, mode="L").resize((cdw, cdh), Image.LANCZOS)
+                    self._tm_photo_corr = ImageTk.PhotoImage(pil_c)
+                    corr_canvas.delete("all")
+                    corr_canvas.create_image(cocx, cocy, anchor="nw", image=self._tm_photo_corr)
+                    try:
+                        disp_x = cocx + int(pc * sc2)
+                        disp_y = cocy + int(pr * sc2)
+                        size = max(3, int(4 * sc2))
+                        corr_canvas.create_line(disp_x - size, disp_y, disp_x + size, disp_y, fill='lime', width=2)
+                        corr_canvas.create_line(disp_x, disp_y - size, disp_x, disp_y + size, fill='lime', width=2)
+                    except Exception:
+                        pass
+
+            # Update info label (include best NCC score)
+            score_text = f"Best NCC Score: {max_score:.2f}" if not np.isnan(max_score) else "Best NCC Score: N/A"
+            self._tm_score_label.configure(text=score_text)
+            self._tm_result_label.configure(
+                text=(f"Match found at image row={pr}, col={pc}  |  "
+                      f"Bounding box: top-left=({pc}, {pr}), "
+                      f"bottom-right=({pc + tw}, {pr + th})  |  "
+                      f"Target: {target_label}")
+            )
+            self.status_label.configure(text="Template matching complete")
+
+        except ValueError as ve:
+            messagebox.showerror("Input Error", str(ve))
+            self.status_label.configure(text="Matching failed")
+        except Exception as e:
+            messagebox.showerror("Error", f"Cross-correlation failed:\n{str(e)}")
+            self.status_label.configure(text="Matching failed")
+
+    def _tm_clear(self):
+        """Reset all template matching state."""
+        self._tm_template   = None
+        self._tm_crop_start = None
+        self._tm_target_image = None
+        self._tm_use_target_compare = False
+        try:
+            self._tm_use_target_toggle.deselect()
+        except Exception:
+            pass
+        if self._tm_rect_id is not None:
+            self._tm_crop_canvas.delete(self._tm_rect_id)
+            self._tm_rect_id = None
+
+        self._tm_redraw_crop_canvas()
+        self._tm_template_preview.delete("all")
+        self._tm_result_canvas.delete("all")
+        self._tm_corr_canvas.delete("all")
+        self._tm_info_label.configure(text="No template selected yet.")
+        self._tm_result_label.configure(text="Load a target image only if you want to compare against it.")
+        self.status_label.configure(text="Template matching cleared")
+        self.status_label.configure(text="Reset to original")  
+
+    def on_fft_click(self, u, v):
+        self.notch_points.append((u, v))
+        print ("Selected notch point:", u, v )
+
+    def  apply_notch_filter_gui(self, ftype, radius, order):
+        if self.fft_shifted is None:
+            return
+        
+        current_image = self.pipeline.get_current()
+
+        self.fft_shifted = compute_fft(current_image)
+
+        filtered, mask= apply_notch_filter(
+            self.fft_shifted,
+            self.notch_points,
+            filter_type=ftype,
+            radius= radius,
+            order= order
+        )
+        result = reconstruct_image(filtered)
+        print(result.dtype)
+        print(result.min(), result.max())
+        print("Filtered image shape:", result.shape)
+
+        self.current_processed = self.pipeline.apply_result(
+            result,
+            f"{ftype.capitalize()} Notch Filter"
+        )
+
+        self.show_fit_image(self.processed_image_view, result)
+
+        self.update_pipeline_log()
+
+        self.show_fit_image(self.frequency_result_view, result)
+        print("Applying notch filter...")
+        print("Points:", self.notch_points)
+        print("Radius:", radius)
+        print("Type:", ftype)
+
+        self.status_label.configure(text=f"Applied {ftype} notch filter with radius={radius} and order={order}")
+
+    def clear_notch_points(self):
+        self.notch_points = []
+        
+        if hasattr(self,"fft_viewer"):
+            self.fft_viewer.clear_points()
 
     # ── Noise ──────────────────────────────────────────────────────────────
 
