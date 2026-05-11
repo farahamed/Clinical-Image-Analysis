@@ -53,7 +53,7 @@ def global_threshold(image, threshold_value):
     return binary
 
 
-def create_structuring_element(size, shape):
+def create_structuring_element(size, shape): # shape: determines the pattern of 1s and 0s inside the element during morphological operations
     """
     Creates a binary structuring element from scratch.
 
@@ -69,21 +69,25 @@ def create_structuring_element(size, shape):
 
     se = np.zeros((size, size), dtype=np.uint8)
 
-    shape = shape.lower()
+    shape = shape.lower() # Convert shape to lowercase for case-insensitive comparison
 
     if shape == "square":
         for i in range(size):
             for j in range(size):
-                se[i, j] = 1
+                se[i, j] = 1 # All pixels in the square structuring element are set to 1 (active)
+                             # During morphological operations, ALL neighboring pixels are considered
+
 
     elif shape == "cross":
-        center = size // 2
+        center = size // 2 # Calculate the center pixel  of the structuring element
 
         for i in range(size):
-            se[i, center] = 1
+            se[i, center] = 1 # Set the center row to 1 (active)
+                              # During morphological operations, these pixels are considered
 
         for j in range(size):
-            se[center, j] = 1
+            se[center, j] = 1 # Set the center column to 1 (active)
+                               # During morphological operations, these pixels are considered
 
     else:
         raise ValueError("Unsupported structuring element shape.")
