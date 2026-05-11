@@ -17,7 +17,10 @@ from processing.histogram.local_equalization import (
     local_histogram_equalization_optimized
 )
 from processing.geometry.transformations import rotate, shear
-from processing.frequency.frequency_template_matching import fourier_cross_correlate
+from processing.frequency.frequency_template_matching import (
+    fourier_cross_correlate,
+    fourier_cross_correlate_normalized,
+)
 
 
 ctk.set_appearance_mode("dark")
@@ -1346,7 +1349,8 @@ class MedicalImageApp:
             self._tm_result_label.configure(text="Computing…")
             self.app.update_idletasks()
 
-            result_img, norm_corr, (pr, pc), (th, tw) = fourier_cross_correlate(
+            # Use normalized cross-correlation for robustness on real images
+            result_img, norm_corr, (pr, pc), (th, tw) = fourier_cross_correlate_normalized(
                 self.current_original, self._tm_template
             )
 
