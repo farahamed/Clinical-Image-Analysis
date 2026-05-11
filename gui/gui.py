@@ -186,6 +186,7 @@ class MedicalImageApp:
     def __init__(self):
         self.current_original = None
         self.current_processed = None
+        self._tm_target_image = None
         self.zoom_factor = 1.0
 
         # Template Matching state
@@ -199,6 +200,8 @@ class MedicalImageApp:
         self._tm_photo_result   = None
         self._tm_photo_corr     = None
         self._tm_photo_template = None
+        self._tm_photo_target   = None
+        self._tm_use_target_compare = False
 
         self.pipeline = PipelineManager()
 
@@ -839,6 +842,53 @@ class MedicalImageApp:
             messagebox.showerror("Error", f"Could not load image.\nReason: {str(e)}")
             self.status_label.configure(text="Error loading image")
 
+    def _tm_load_target_image(self):
+        file_path = filedialog.askopenfilename(
+            title="Choose a Target Image for Template Matching",
+            filetypes=[
+                ("Medical Images", "*.jpg *.jpeg *.bmp *.dcm"),
+                ("JPEG Images", "*.jpg *.jpeg"),
+                ("BMP Images", "*.bmp"),
+                ("DICOM Images", "*.dcm"),
+                ("All Files", "*.*")
+            ]
+        )
+        if not file_path:
+            return
+
+        try:
+            if file_path.lower().endswith('.dcm'):
+                pixel_array, _ = load_dicom_image(file_path)
+                target_image = pixel_array
+            elif file_path.lower().endswith(('.jpg', '.jpeg', '.bmp')):
+                target_image = load_regular_image(file_path)
+            else:
+                messagebox.showerror("Unsupported Format", "Please use JPEG, BMP, or DICOM files only.")
+                return
+
+            self._tm_target_image = target_image
+            self.tab_view.set("Template Matching")
+            self._tm_redraw_crop_canvas()
+            self._tm_result_canvas.delete("all")
+            self._tm_corr_canvas.delete("all")
+            self._tm_result_label.configure(text="Target image loaded. Turn on 'Use target image' if you want to compare against it.")
+            self.status_label.configure(text="Target image loaded for template matching")
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not load target image.\nReason: {str(e)}")
+
+    def _tm_on_use_target_toggle(self):
+        self._tm_use_target_compare = bool(self._tm_use_target_toggle.get())
+        if self._tm_use_target_compare and self._tm_target_image is None:
+            messagebox.showinfo(
+                "Target Image Missing",
+                "Load a target image first, or turn the toggle off to compare against the same source image."
+            )
+            try:
+                self._tm_use_target_toggle.deselect()
+            except Exception:
+                pass
+            self._tm_use_target_compare = False
+
     def save_image(self):
         self.current_processed = self.pipeline.get_current()
 
@@ -1179,6 +1229,20 @@ class MedicalImageApp:
         ).pack(side="left", expand=True, fill="x", padx=(0, 4))
 
         ctk.CTkButton(
+            btn_row, text="Load Target Image",
+            command=self._tm_load_target_image,
+            height=36, font=ctk.CTkFont(size=12),
+            fg_color="#2d6a2d", hover_color="#1f4f1f"
+        ).pack(side="left", expand=True, fill="x", padx=(0, 4))
+
+        self._tm_use_target_toggle = ctk.CTkSwitch(
+            btn_row,
+            text="Use target image",
+            command=self._tm_on_use_target_toggle
+        )
+        self._tm_use_target_toggle.pack(side="left", padx=(0, 4))
+
+        ctk.CTkButton(
             btn_row, text="Clear",
             command=self._tm_clear,
             height=36, font=ctk.CTkFont(size=12),
@@ -1220,11 +1284,27 @@ class MedicalImageApp:
         )
         self._tm_corr_canvas.grid(row=3, column=0, sticky="nsew", padx=6, pady=(0, 6))
 
+        self._tm_result_info_frame = ctk.CTkFrame(right_panel, fg_color="transparent")
+        self._tm_result_info_frame.grid(row=4, column=0, sticky="ew", padx=8, pady=(0, 6))
+        self._tm_result_info_frame.columnconfigure(0, weight=1)
+
         self._tm_result_label = ctk.CTkLabel(
-            right_panel, text="Run matching to see results here.",
-            font=ctk.CTkFont(size=11), text_color="#888"
+            self._tm_result_info_frame,
+            text="Run matching to see results here.",
+            font=ctk.CTkFont(size=11),
+            text_color="#888",
+            wraplength=420,
+            justify="left"
         )
-        self._tm_result_label.grid(row=4, column=0, sticky="w", padx=8, pady=(0, 6))
+        self._tm_result_label.grid(row=0, column=0, sticky="w")
+
+        self._tm_score_label = ctk.CTkLabel(
+            self._tm_result_info_frame,
+            text="Best NCC Score: N/A",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#b7f3b7"
+        )
+        self._tm_score_label.grid(row=1, column=0, sticky="w", pady=(2, 0))
 
     def _tm_redraw_crop_canvas(self, event=None):
         """Redraw the crop canvas whenever it is resized or a new image is loaded."""
@@ -1343,14 +1423,27 @@ class MedicalImageApp:
 
     def _tm_run(self):
         """Run Fourier cross-correlation and display result + correlation map."""
-        if self.current_original is None:
-            messagebox.showwarning("No Image", "Please load an image first.")
-            return
         if self._tm_template is None:
             messagebox.showwarning(
                 "No Template",
                 "Please draw a crop rectangle on the image to select a template."
             )
+            return
+
+        target_image = self.current_original
+        target_label = "same source image"
+        if self._tm_use_target_compare:
+            if self._tm_target_image is None:
+                messagebox.showwarning(
+                    "No Target Image",
+                    "Turn off 'Use target image' or load a target image first."
+                )
+                return
+            target_image = self._tm_target_image
+            target_label = "separate target image"
+
+        if target_image is None:
+            messagebox.showwarning("No Image", "Please load an image first.")
             return
 
         try:
@@ -1360,7 +1453,7 @@ class MedicalImageApp:
 
             # Use normalized cross-correlation for robustness on real images
             result_img, norm_corr, (pr, pc), (th, tw) = fourier_cross_correlate_normalized(
-                self.current_original, self._tm_template
+                target_image, self._tm_template
             )
 
             # ── Draw result image ────────────────────────────────────────────────
@@ -1388,7 +1481,7 @@ class MedicalImageApp:
             corr_canvas = self._tm_corr_canvas
             corr_canvas.delete("all")
             # Valid region size: out_h = ih - th + 1, out_w = iw - tw + 1
-            ih_full, iw_full = self.current_original.shape[:2]
+            ih_full, iw_full = target_image.shape[:2]
             out_h = max(1, ih_full - th + 1)
             out_w = max(1, iw_full - tw + 1)
             corr_valid = norm_corr[:out_h, :out_w]
@@ -1474,11 +1567,12 @@ class MedicalImageApp:
 
             # Update info label (include best NCC score)
             score_text = f"Best NCC Score: {max_score:.2f}" if not np.isnan(max_score) else "Best NCC Score: N/A"
+            self._tm_score_label.configure(text=score_text)
             self._tm_result_label.configure(
                 text=(f"Match found at image row={pr}, col={pc}  |  "
                       f"Bounding box: top-left=({pc}, {pr}), "
                       f"bottom-right=({pc + tw}, {pr + th})  |  "
-                      f"{score_text}")
+                      f"Target: {target_label}")
             )
             self.status_label.configure(text="Template matching complete")
 
@@ -1493,6 +1587,12 @@ class MedicalImageApp:
         """Reset all template matching state."""
         self._tm_template   = None
         self._tm_crop_start = None
+        self._tm_target_image = None
+        self._tm_use_target_compare = False
+        try:
+            self._tm_use_target_toggle.deselect()
+        except Exception:
+            pass
         if self._tm_rect_id is not None:
             self._tm_crop_canvas.delete(self._tm_rect_id)
             self._tm_rect_id = None
@@ -1502,7 +1602,7 @@ class MedicalImageApp:
         self._tm_result_canvas.delete("all")
         self._tm_corr_canvas.delete("all")
         self._tm_info_label.configure(text="No template selected yet.")
-        self._tm_result_label.configure(text="Run matching to see results here.")
+        self._tm_result_label.configure(text="Load a target image only if you want to compare against it.")
         self.status_label.configure(text="Template matching cleared")
 
     def run(self):
