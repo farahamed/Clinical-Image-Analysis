@@ -6,9 +6,13 @@ import numpy as np
 from image_io.image_loader import load_regular_image, load_dicom_image, get_dicom_tag
 from image_io.metadata import build_metadata_text
 from processing.interpolation.zoom import zoom_image
-
 from pipeline.pipeline_manager import PipelineManager
-
+from gui.widgets.fft_viewer import FFTViewer
+from gui.widgets.notch_panel import NotchPanel
+from processing.frequency.reconstruction import reconstruct_image
+from processing.frequency.fft_utils import compute_fft
+from processing.frequency.spectrum_display import magnitude_spectrum
+from processing.frequency.notch_filters import apply_notch_filter
 from processing.filtering.linear_filters import apply_average, apply_gaussian
 from processing.filtering.nonlinear_filters import median_filter
 from processing.filtering.edge_detection import apply_edge_detection
@@ -55,6 +59,7 @@ class ScrollableImageView(ctk.CTkFrame):
         self.fit_mode = True
         self.photo = None  
         self._resize_job = None
+
 
         self.canvas.bind("<ButtonPress-1>", self._on_drag_start)
         self.canvas.bind("<B1-Motion>", self._on_drag_move)
@@ -203,6 +208,8 @@ class MedicalImageApp:
         self._tm_photo_target   = None
         self._tm_use_target_compare = False
 
+        self.fft_shifted = None
+        self.notch_points = []
         self.pipeline = PipelineManager()
 
         self.app = ctk.CTk()
@@ -349,11 +356,14 @@ class MedicalImageApp:
         self.tab_view.add("Pipeline Log")
         self.tab_view.add("Metadata")
         self.tab_view.add("Template Matching")
+        self.tab_view.add("Frequency Domain")
+
 
         self.build_image_viewer_tab()
         self.build_pipeline_log_tab()
         self.build_metadata_tab()
         self.build_template_matching_tab()
+        self.build_frequency_tab()
 
     def build_image_viewer_tab(self):
         viewer_tab = self.tab_view.tab("Image Viewer")
@@ -662,7 +672,48 @@ class MedicalImageApp:
         zoomed = zoom_image(image_array, display_scale, method)
 
         viewer.set_image(zoomed, fit_to_window=False)            
+    
+    def build_frequency_tab(self):
+        tab= self.tab_view.tab("Frequency Domain")
+        
+        #main controller
+        main_frame = ctk.CTkFrame(tab)
+        main_frame.pack(fill="both", expand=True)
 
+        #Left: Spectrum viewer
+        left_frame = ctk.CTkFrame(main_frame)
+        left_frame.pack(side="left", fill="both", expand=True)
+
+        #FFT label
+        ctk.CTkLabel(
+            left_frame,
+            text="Magnitude Spectrum",
+            font=ctk.CTkFont(size=13, weight="bold")
+        ).pack(pady=5)
+
+        #FFT viewer
+        self.fft_viewer = FFTViewer(left_frame, self.on_fft_click)
+        self.fft_viewer.pack(fill="both", expand=True, padx=10, pady=10)
+
+        #RIGHT: Notch filter controls
+        right_frame = ctk.CTkFrame(main_frame, width=420)
+        right_frame.pack(side="right", fill="y", padx=10, pady=10)
+
+        #Reconstructed image label
+        ctk.CTkLabel(
+            right_frame,
+            text="Reconstructed Image",
+            font=ctk.CTkFont(size=13, weight="bold")
+        ).pack(pady=5)
+
+        #Reconstructed image viewer
+        self.frequency_result_view = ScrollableImageView(right_frame,width=380, height=300)
+        self.frequency_result_view.pack(fill="both", expand=True, padx=10, pady=10)
+
+        #Notch Panel
+        self.notch_panel = NotchPanel(right_frame, self.apply_notch_filter_gui, self.clear_notch_points)
+        self.notch_panel.pack(fill="x", padx=10, pady=10)
+    
     def show_metadata_text(self, text):
         self.metadata_box.configure(state="normal")
         self.metadata_box.delete("1.0", "end")
@@ -786,6 +837,16 @@ class MedicalImageApp:
             if file_path.lower().endswith('.dcm'):
                 pixel_array, dicom_data = load_dicom_image(file_path)
                 self.current_original = pixel_array
+                self.fft_shifted = compute_fft(self.current_original)
+
+                spectrum = magnitude_spectrum(self.fft_shifted)
+
+                self.notch_points = []
+
+                if hasattr(self, "fft_viewer"):
+                   self.fft_viewer.set_spectrum(spectrum)
+
+
                 self.current_processed = pixel_array.copy()
 
                 self.pipeline.set_original(pixel_array)
@@ -810,6 +871,11 @@ class MedicalImageApp:
             elif file_path.lower().endswith(('.jpg', '.jpeg', '.bmp')):
                 image_array = load_regular_image(file_path)
                 self.current_original = image_array
+                self.fft_shifted = compute_fft(self.current_original)
+                spectrum = magnitude_spectrum(self.fft_shifted)
+                self.notch_points = []
+                if hasattr(self, "fft_viewer"):
+                    self.fft_viewer.set_spectrum(spectrum)
                 self.current_processed = image_array.copy()
 
                 self.pipeline.set_original(image_array)
@@ -1604,6 +1670,54 @@ class MedicalImageApp:
         self._tm_info_label.configure(text="No template selected yet.")
         self._tm_result_label.configure(text="Load a target image only if you want to compare against it.")
         self.status_label.configure(text="Template matching cleared")
+        self.status_label.configure(text="Reset to original")  
+
+    def on_fft_click(self, u, v):
+        self.notch_points.append((u, v))
+        print ("Selected notch point:", u, v )
+
+    def  apply_notch_filter_gui(self, ftype, radius, order):
+        if self.fft_shifted is None:
+            return
+        
+        current_image = self.pipeline.get_current()
+
+        self.fft_shifted = compute_fft(current_image)
+
+        filtered, mask= apply_notch_filter(
+            self.fft_shifted,
+            self.notch_points,
+            filter_type=ftype,
+            radius= radius,
+            order= order
+        )
+        result = reconstruct_image(filtered)
+        print(result.dtype)
+        print(result.min(), result.max())
+        print("Filtered image shape:", result.shape)
+
+        self.current_processed = self.pipeline.apply_result(
+            result,
+            f"{ftype.capitalize()} Notch Filter"
+        )
+
+        self.show_fit_image(self.processed_image_view, result)
+
+        self.update_pipeline_log()
+
+        self.show_fit_image(self.frequency_result_view, result)
+        print("Applying notch filter...")
+        print("Points:", self.notch_points)
+        print("Radius:", radius)
+        print("Type:", ftype)
+
+        self.status_label.configure(text=f"Applied {ftype} notch filter with radius={radius} and order={order}")
+
+    def clear_notch_points(self):
+        self.notch_points = []
+        
+        if hasattr(self,"fft_viewer"):
+            self.fft_viewer.clear_points()
 
     def run(self):
         self.app.mainloop()

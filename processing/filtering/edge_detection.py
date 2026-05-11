@@ -1,28 +1,36 @@
 import numpy as np
-from .convolution import convolve2d
+from .convolution import convolve2d, normalize_image
 
 
-def sobel_kernels():
-    gx = np.array([
-        [-1, 0, 1],
-        [-2, 0, 2],
-        [-1, 0, 1]
-    ], dtype=np.float64)
+SOBEL_X = np.array([
+    [-1, 0, 1],
+    [-2, 0, 2],
+    [-1, 0, 1]
+], dtype=np.float32)
 
-    gy = np.array([
-        [-1, -2, -1],
-        [ 0,  0,  0],
-        [ 1,  2,  1]
-    ], dtype=np.float64)
+SOBEL_Y = np.array([
+    [-1, -2, -1],
+    [0, 0, 0],
+    [1, 2, 1]
+], dtype=np.float32)
 
-    return gx, gy
 
-def apply_edge_detection(image):
-     gx, gy = sobel_kernels()
-     grad_x = convolve2d(image, gx)
-     grad_y = convolve2d(image, gy)
+def apply_edge_detection(image, use_fast_magnitude=True):
 
-     magnitude = np.sqrt(grad_x**2 + grad_y**2)
+    grad_x = convolve2d(image, SOBEL_X)
+    grad_y = convolve2d(image, SOBEL_Y)
 
-     return grad_x, grad_y, magnitude
-    
+    if use_fast_magnitude:
+
+        # Faster approximation
+        magnitude = np.abs(grad_x) + np.abs(grad_y)
+
+    else:
+
+        magnitude = np.sqrt(grad_x**2 + grad_y**2)
+
+    grad_x = normalize_image(np.abs(grad_x))
+    grad_y = normalize_image(np.abs(grad_y))
+    magnitude = normalize_image(magnitude)
+
+    return grad_x, grad_y, magnitude

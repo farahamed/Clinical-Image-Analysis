@@ -2,32 +2,59 @@ import numpy as np
 from .convolution import convolve2d
 
 
+GAUSSIAN_CACHE = {}
+AVERAGE_CACHE = {}
+
+
 def average_kernel(size):
-    kernel = np.ones((size, size), dtype=np.float64)
-    return kernel / (size * size)
+
+    if size in AVERAGE_CACHE:
+        return AVERAGE_CACHE[size]
+
+    kernel = np.ones((size, size), dtype=np.float32)
+    kernel /= (size * size)
+
+    AVERAGE_CACHE[size] = kernel
+
+    return kernel
 
 
 def gaussian_kernel(size, sigma):
+
+    key = (size, sigma)
+
+    if key in GAUSSIAN_CACHE:
+        return GAUSSIAN_CACHE[key]
+
     k = size // 2
-    kernel = np.zeros((size, size), dtype=np.float64)
 
-    for x in range(-k, k+1):
-        for y in range(-k, k+1):
-            value = (1 / (2 * np.pi * sigma**2)) * \
-                    np.exp(-(x**2 + y**2) / (2 * sigma**2))
-            kernel[x + k, y + k] = value
+    x = np.arange(-k, k + 1)
+    y = np.arange(-k, k + 1)
 
-   
+    xx, yy = np.meshgrid(x, y)
+
+    kernel = np.exp(
+        -(xx**2 + yy**2) / (2 * sigma**2)
+    )
+
     kernel /= np.sum(kernel)
+
+    kernel = kernel.astype(np.float32)
+
+    GAUSSIAN_CACHE[key] = kernel
 
     return kernel
 
 
 def apply_average(image, size):
+
     kernel = average_kernel(size)
+
     return convolve2d(image, kernel)
 
 
 def apply_gaussian(image, size, sigma):
+
     kernel = gaussian_kernel(size, sigma)
+
     return convolve2d(image, kernel)

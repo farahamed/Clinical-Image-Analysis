@@ -1,34 +1,48 @@
 import numpy as np
 
 
-def zero_pad(image, pad_h, pad_w):
-    h, w = image.shape
-
-    padded = np.zeros((h + 2 * pad_h, w + 2 * pad_w), dtype=image.dtype)
-
-    for i in range(h):
-        for j in range(w):
-            padded[i + pad_h, j + pad_w] = image[i, j]
-
-    return padded
+def zero_pad(image, pad_h, pad_w, mode='edge'):
+    return np.pad(
+        image,
+        ((pad_h, pad_h), (pad_w, pad_w)),
+        mode=mode
+    )
 
 
-def convolve2d(image, kernel):
-    image = image.astype(np.float64)
-    
+def convolve2d(image, kernel, padding='edge'):
+
+    image = image.astype(np.float32)
+    kernel = kernel.astype(np.float32)
+
     h, w = image.shape
     kh, kw = kernel.shape
 
     pad_h = kh // 2
     pad_w = kw // 2
 
-    padded = np.pad(image, ((pad_h, pad_h), (pad_w, pad_w)), mode='constant')
+    padded = np.pad(
+        image,
+        ((pad_h, pad_h), (pad_w, pad_w)),
+        mode=padding
+    )
 
-    result = np.zeros((h, w), dtype=np.float64)
+    result = np.zeros((h, w), dtype=np.float32)
 
     for i in range(h):
+
+        rows = padded[i:i + kh]
+
         for j in range(w):
-            region = padded[i:i + kh, j:j + kw]
+
+            region = rows[:, j:j + kw]
+
             result[i, j] = np.sum(region * kernel)
 
     return result
+
+
+def normalize_image(image):
+
+    image = np.clip(image, 0, 255)
+
+    return image.astype(np.uint8)
