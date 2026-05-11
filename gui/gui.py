@@ -17,7 +17,15 @@ from processing.histogram.local_equalization import (
     local_histogram_equalization_optimized
 )
 from processing.geometry.transformations import rotate, shear
-
+from processing.morphology.binary_morphology import (
+    global_threshold,
+    create_structuring_element,
+    erode,
+    dilate,
+    opening,
+    closing,
+    boundary_extraction
+)
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -298,10 +306,12 @@ class MedicalImageApp:
         self.tab_view.pack(fill="both", expand=True)
 
         self.tab_view.add("Image Viewer")
+        self.tab_view.add("Morphology")
         self.tab_view.add("Pipeline Log")
         self.tab_view.add("Metadata")
 
         self.build_image_viewer_tab()
+        self.build_morphology_tab()
         self.build_pipeline_log_tab()
         self.build_metadata_tab()
 
@@ -350,6 +360,177 @@ class MedicalImageApp:
 
         # Operation controls are now visible while the user sees the image.
         self.build_operation_controls(main_viewer_frame)
+
+    def build_morphology_tab(self):
+        morphology_tab = self.tab_view.tab("Morphology")
+
+        main_frame = ctk.CTkFrame(morphology_tab)
+        main_frame.pack(fill="both", expand=True, padx=15, pady=15)
+
+        ctk.CTkLabel(
+            main_frame,
+            text="Clinical Morphological Engine",
+            font=ctk.CTkFont(size=18, weight="bold")
+        ).pack(pady=(10, 5))
+
+        ctk.CTkLabel(
+            main_frame,
+            text=(
+                "Use this tab to threshold the current image into a binary mask, "
+                "then apply custom erosion, dilation, opening, closing, or boundary extraction."
+            ),
+            font=ctk.CTkFont(size=12),
+            text_color="#aaaaaa",
+            wraplength=850
+        ).pack(pady=(0, 15))
+
+        controls_frame = ctk.CTkFrame(main_frame)
+        controls_frame.pack(fill="x", padx=10, pady=10)
+
+        # ---------------- Threshold section ----------------
+        threshold_frame = ctk.CTkFrame(controls_frame)
+        threshold_frame.pack(fill="x", padx=10, pady=10)
+
+        ctk.CTkLabel(
+            threshold_frame,
+            text="1. Global Thresholding",
+            font=ctk.CTkFont(size=14, weight="bold")
+        ).pack(anchor="w", padx=10, pady=(10, 5))
+
+        self.threshold_value_label = ctk.CTkLabel(
+            threshold_frame,
+            text="Threshold Value: 128",
+            font=ctk.CTkFont(size=12)
+        )
+        self.threshold_value_label.pack(anchor="w", padx=10, pady=(5, 2))
+
+        self.threshold_slider = ctk.CTkSlider(
+            threshold_frame,
+            from_=0,
+            to=255,
+            number_of_steps=255,
+            command=self.on_threshold_slider_change
+        )
+        self.threshold_slider.pack(fill="x", padx=10, pady=5)
+        self.threshold_slider.set(128)
+
+        ctk.CTkButton(
+            threshold_frame,
+            text="Binarize Image",
+            command=self.apply_threshold,
+            width=180
+        ).pack(anchor="w", padx=10, pady=(8, 12))
+
+        # ---------------- Structuring element section ----------------
+        se_frame = ctk.CTkFrame(controls_frame)
+        se_frame.pack(fill="x", padx=10, pady=10)
+
+        ctk.CTkLabel(
+            se_frame,
+            text="2. Structuring Element Settings",
+            font=ctk.CTkFont(size=14, weight="bold")
+        ).pack(anchor="w", padx=10, pady=(10, 5))
+
+        settings_row = ctk.CTkFrame(se_frame, fg_color="transparent")
+        settings_row.pack(fill="x", padx=10, pady=5)
+
+        size_frame = ctk.CTkFrame(settings_row, fg_color="transparent")
+        size_frame.pack(side="left", fill="x", expand=True, padx=(0, 10))
+
+        ctk.CTkLabel(
+            size_frame,
+            text="SE Size",
+            font=ctk.CTkFont(size=12)
+        ).pack(anchor="w")
+
+        self.se_size_entry = ctk.CTkEntry(size_frame)
+        self.se_size_entry.pack(fill="x", pady=(2, 5))
+        self.se_size_entry.insert(0, "3")
+
+        shape_frame = ctk.CTkFrame(settings_row, fg_color="transparent")
+        shape_frame.pack(side="left", fill="x", expand=True, padx=(10, 0))
+
+        ctk.CTkLabel(
+            shape_frame,
+            text="SE Shape",
+            font=ctk.CTkFont(size=12)
+        ).pack(anchor="w")
+
+        self.se_shape_menu = ctk.CTkOptionMenu(
+            shape_frame,
+            values=["Square", "Cross"]
+        )
+        self.se_shape_menu.pack(fill="x", pady=(2, 5))
+        self.se_shape_menu.set("Square")
+
+        ctk.CTkLabel(
+            se_frame,
+            text="Note: SE size must be odd, such as 3, 5, or 7.",
+            font=ctk.CTkFont(size=11),
+            text_color="#999999"
+        ).pack(anchor="w", padx=10, pady=(0, 10))
+
+        # ---------------- Morphological operations section ----------------
+        operations_frame = ctk.CTkFrame(controls_frame)
+        operations_frame.pack(fill="x", padx=10, pady=10)
+
+        ctk.CTkLabel(
+            operations_frame,
+            text="3. Morphological Operations",
+            font=ctk.CTkFont(size=14, weight="bold")
+        ).pack(anchor="w", padx=10, pady=(10, 8))
+
+        buttons_row_1 = ctk.CTkFrame(operations_frame, fg_color="transparent")
+        buttons_row_1.pack(anchor="w", padx=10, pady=5)
+
+        ctk.CTkButton(
+            buttons_row_1,
+            text="Erosion",
+            command=self.apply_erosion,
+            width=130
+        ).pack(side="left", padx=4)
+
+        ctk.CTkButton(
+            buttons_row_1,
+            text="Dilation",
+            command=self.apply_dilation,
+            width=130
+        ).pack(side="left", padx=4)
+
+        ctk.CTkButton(
+            buttons_row_1,
+            text="Opening",
+            command=self.apply_opening,
+            width=130
+        ).pack(side="left", padx=4)
+
+        ctk.CTkButton(
+            buttons_row_1,
+            text="Closing",
+            command=self.apply_closing,
+            width=130
+        ).pack(side="left", padx=4)
+
+        buttons_row_2 = ctk.CTkFrame(operations_frame, fg_color="transparent")
+        buttons_row_2.pack(anchor="w", padx=10, pady=(5, 12))
+
+        ctk.CTkButton(
+            buttons_row_2,
+            text="Boundary Extraction",
+            command=self.apply_boundary_extraction,
+            width=180,
+            fg_color="#5b3f8c",
+            hover_color="#432d69"
+        ).pack(side="left", padx=4)
+
+        ctk.CTkLabel(
+            main_frame,
+            text=(
+                "Results are displayed in the Processed Image viewer and added to the pipeline history."
+            ),
+            font=ctk.CTkFont(size=11),
+            text_color="#999999"
+        ).pack(anchor="w", padx=20, pady=(5, 10))        
 
     def build_operation_controls(self, parent):
         # Fixed-height scrollable operations area.
@@ -669,6 +850,26 @@ class MedicalImageApp:
 
         return value
 
+    def on_threshold_slider_change(self, value):
+        threshold_value = int(float(value))
+        self.threshold_value_label.configure(
+            text=f"Threshold Value: {threshold_value}"
+        )
+
+
+    def get_threshold_value(self):
+        return int(float(self.threshold_slider.get()))
+
+
+    def get_structuring_element_from_gui(self):
+        se_size = self.get_valid_odd_integer(
+            self.se_size_entry,
+            "Structuring element size"
+        )
+
+        se_shape = self.se_shape_menu.get()
+
+        return create_structuring_element(se_size, se_shape), se_size, se_shape
 
     def apply_pipeline_operation(self, operation_function, operation_name):
         """
@@ -1002,6 +1203,95 @@ class MedicalImageApp:
                 lambda img: shear(img, shear_x=shear_x, shear_y=shear_y),
                 f"Shearing (x={shear_x}, y={shear_y})"
             )
+
+        except Exception as e:
+            messagebox.showerror("Invalid Input", str(e))
+
+    def apply_threshold(self):
+        try:
+            threshold_value = self.get_threshold_value()
+
+            self.apply_pipeline_operation(
+                lambda img: global_threshold(img, threshold_value),
+                f"Global Thresholding (T={threshold_value})"
+            )
+
+            self.tab_view.set("Image Viewer")
+
+        except Exception as e:
+            messagebox.showerror("Invalid Input", str(e))
+
+
+    def apply_erosion(self):
+        try:
+            se, se_size, se_shape = self.get_structuring_element_from_gui()
+
+            self.apply_pipeline_operation(
+                lambda img: erode(img, se),
+                f"Erosion ({se_shape}, {se_size}x{se_size})"
+            )
+
+            self.tab_view.set("Image Viewer")
+
+        except Exception as e:
+            messagebox.showerror("Invalid Input", str(e))
+
+
+    def apply_dilation(self):
+        try:
+            se, se_size, se_shape = self.get_structuring_element_from_gui()
+
+            self.apply_pipeline_operation(
+                lambda img: dilate(img, se),
+                f"Dilation ({se_shape}, {se_size}x{se_size})"
+            )
+
+            self.tab_view.set("Image Viewer")
+
+        except Exception as e:
+            messagebox.showerror("Invalid Input", str(e))
+
+
+    def apply_opening(self):
+        try:
+            se, se_size, se_shape = self.get_structuring_element_from_gui()
+
+            self.apply_pipeline_operation(
+                lambda img: opening(img, se),
+                f"Opening ({se_shape}, {se_size}x{se_size})"
+            )
+
+            self.tab_view.set("Image Viewer")
+
+        except Exception as e:
+            messagebox.showerror("Invalid Input", str(e))
+
+
+    def apply_closing(self):
+        try:
+            se, se_size, se_shape = self.get_structuring_element_from_gui()
+
+            self.apply_pipeline_operation(
+                lambda img: closing(img, se),
+                f"Closing ({se_shape}, {se_size}x{se_size})"
+            )
+
+            self.tab_view.set("Image Viewer")
+
+        except Exception as e:
+            messagebox.showerror("Invalid Input", str(e))
+
+
+    def apply_boundary_extraction(self):
+        try:
+            se, se_size, se_shape = self.get_structuring_element_from_gui()
+
+            self.apply_pipeline_operation(
+                lambda img: boundary_extraction(img, se),
+                f"Boundary Extraction ({se_shape}, {se_size}x{se_size})"
+            )
+
+            self.tab_view.set("Image Viewer")
 
         except Exception as e:
             messagebox.showerror("Invalid Input", str(e))
