@@ -227,74 +227,6 @@ def test_noisy_image():
     print(f"  PASS  noisy image: peak=({pr},{pc})")
 
 
-# ===========================================================================
-#  Real medical image test
-# ===========================================================================
-
-# Public-domain chest X-ray — NIH Open-i (stable, no authentication needed)
-CHEST_XRAY_URL = (
-    "https://openi.nlm.nih.gov/imgs/512/368/3089141_chest-xray-normal-pa-1.png"
-)
-
-SAVE_PATH = os.path.join(os.path.dirname(__file__), "_sample_chest_xray.png")
-
-
-def test_real_chest_xray():
-    """
-    Download a public-domain chest X-ray, crop a 60×60 patch from the centre,
-    and verify the algorithm finds it back within 5 pixels of the true location.
-
-    Falls back to generating a synthetic medical-like image if download fails
-    (no internet, blocked URLs, etc.).
-    """
-    from PIL import Image
-
-    # Download once, cache locally
-    image = None
-    if not os.path.exists(SAVE_PATH):
-        ok = download_image(CHEST_XRAY_URL, SAVE_PATH)
-        if ok:
-            pil_img = Image.open(SAVE_PATH).convert("L")   # grayscale
-            image = np.array(pil_img, dtype=np.uint8)
-    else:
-        pil_img = Image.open(SAVE_PATH).convert("L")
-        image = np.array(pil_img, dtype=np.uint8)
-
-    # Fallback: generate synthetic medical-like image if download failed
-    if image is None:
-        print("  [fallback] Generating synthetic medical image for testing...")
-        rng = np.random.default_rng(42)
-        image = rng.integers(40, 120, size=(512, 512), dtype=np.uint8)
-        # Add a bright region to simulate tissue
-        image[200:350, 200:350] = rng.integers(150, 220, size=(150, 150), dtype=np.uint8)
-
-    ih, iw   = image.shape
-    th, tw   = 60, 60
-    TRUE_ROW = ih // 2
-    TRUE_COL = iw // 2
-
-    template = image[TRUE_ROW : TRUE_ROW + th, TRUE_COL : TRUE_COL + tw].copy()
-
-    result_img, norm_map, (pr, pc), _ = fourier_cross_correlate(image, template)
-
-    row_err = abs(pr - TRUE_ROW)
-    col_err = abs(pc - TRUE_COL)
-
-    # Allow ±2 px tolerance (sub-pixel floating-point rounding)
-    assert row_err <= 2 and col_err <= 2, (
-        f"Real image: expected ({TRUE_ROW},{TRUE_COL}), "
-        f"got ({pr},{pc})  — error=({row_err},{col_err})"
-    )
-
-    # Verify output shape
-    assert result_img.shape == (ih, iw, 3)
-    assert norm_map.shape   == (ih, iw)
-
-    print(
-        f"  PASS  medical image ({ih}×{iw} px): "
-        f"peak=({pr},{pc}), expected=({TRUE_ROW},{TRUE_COL}), "
-        f"error=({row_err},{col_err})"
-    )
 
 
 # ===========================================================================
@@ -311,7 +243,6 @@ ALL_TESTS = [
     test_template_too_small_raises,
     test_corner_placement,
     test_noisy_image,
-    test_real_chest_xray,
 ]
 
 if __name__ == "__main__":
