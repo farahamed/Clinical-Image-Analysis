@@ -9,21 +9,21 @@ def convert_to_grayscale(image):
     if image is None:
         raise ValueError("No image provided.")
 
-    if len(image.shape) == 2:
+    if len(image.shape) == 2:  # 2D Image (height, width) Already grayscale
         return image.astype(np.uint8)
 
-    if len(image.shape) == 3:
+    if len(image.shape) == 3: # 3D Image (height, width, RGB color channels) Color image, convert to grayscale
         height, width, channels = image.shape
         gray = np.zeros((height, width), dtype=np.uint8)
 
-        for i in range(height):
-            for j in range(width):
+        for i in range(height): # Rows
+            for j in range(width): # Columns
                 if channels >= 3:
                     r = image[i, j, 0]
                     g = image[i, j, 1]
                     b = image[i, j, 2]
-                    gray[i, j] = int(0.299 * r + 0.587 * g + 0.114 * b)
-                else:
+                    gray[i, j] = int(0.299 * r + 0.587 * g + 0.114 * b) # Standard luminosity method
+                else: # Handling Single-Channel 3D Images (DICOM)
                     gray[i, j] = image[i, j, 0]
 
         return gray
