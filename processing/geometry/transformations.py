@@ -38,21 +38,38 @@ def rotate(image, angle_degrees):
     return output
 
 
-def shear(image,shear_x=0.0, shear_y=0.0):
+def shear(image, shear_x=0.0, shear_y=0.0):
+    h, w = image.shape[:2]
 
-    #get dimensions
-    h,w=image.shape[:2]
-    #same size as input image
-    output= np.zeros_like(image)
-    
-    #apply inverse mapping
+    # Shear around the image center — mirrors how rotate() uses new_cx / new_cy
+    cx, cy = w / 2, h / 2
+
+    # Output stays the same size as input (same as rotate's new_w x new_h pattern
+    # but here we keep original dims since shear is anchored to center)
+    if image.ndim == 3:
+        output = np.zeros((h, w, image.shape[2]), dtype=np.uint8)
+    else:
+        output = np.zeros((h, w), dtype=np.uint8)
+
+    # Determinant of the shear matrix for exact inverse
+    det = 1.0 - shear_x * shear_y
+
     for y_out in range(h):
         for x_out in range(w):
-            #inverse shear
-            x_src= x_out - shear_x * y_out
-            y_src= y_out - shear_y * x_out
-            #interpolation
-            output[y_out, x_out]=np.clip(bilinear_interpolation_pixel(image, x_src, y_src),0,255)
+            # Translate to center origin (same trick as rotate's dx, dy)
+            dx = x_out - cx
+            dy = y_out - cy
+
+            # Exact inverse shear, then translate back
+            x_src = (dx - shear_x * dy) / det + cx
+            y_src = (dy - shear_y * dx) / det + cy
+
+            output[y_out, x_out] = np.clip(
+                bilinear_interpolation_pixel(image, x_src, y_src), 0, 255
+            )
+
+    return output
+
     return output
 #warpper function for zooming
 def scale(image, scale_factor, method="bilinear"):
