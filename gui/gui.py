@@ -449,6 +449,7 @@ class MedicalImageApp:
 
         self.operations_tab_view.add("Enhancement")
         self.operations_tab_view.add("Morphology")
+        self.operations_tab_view.add("Noise & ROI")
 
         enhancement_scroll = ctk.CTkScrollableFrame(
             self.operations_tab_view.tab("Enhancement"),
@@ -462,8 +463,15 @@ class MedicalImageApp:
         )
         morphology_scroll.pack(fill="both", expand=True, padx=5, pady=5)
 
+        noise_roi_scroll = ctk.CTkScrollableFrame(
+            self.operations_tab_view.tab("Noise & ROI"),
+            height=220
+        )
+        noise_roi_scroll.pack(fill="both", expand=True, padx=5, pady=5)
+
         self.build_enhancement_controls(enhancement_scroll)
         self.build_morphology_controls(morphology_scroll)
+        self.build_noise_roi_controls(noise_roi_scroll)
 
     def build_enhancement_controls(self, parent):
         sections_frame = ctk.CTkFrame(parent, fg_color="transparent")
@@ -778,64 +786,99 @@ class MedicalImageApp:
             text_color="#999",
             wraplength=260
         ).pack(pady=(0, 8))           
-        # ---------------- Noise & ROI section ----------------
-        noise_roi_frame = ctk.CTkFrame(sections_frame)
-        noise_roi_frame.grid(row=0, column=3, sticky="nsew", padx=5, pady=5)
+
+    def build_noise_roi_controls(self, parent):
+        noise_roi_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        noise_roi_frame.pack(fill="x", padx=8, pady=5)
+
+        # ---------------- Noise section ----------------
+        noise_frame = ctk.CTkFrame(noise_roi_frame)
+        noise_frame.pack(fill="x", padx=5, pady=5)
 
         ctk.CTkLabel(
-            noise_roi_frame,
-            text="Noise & ROI",
+            noise_frame,
+            text="Noise Modeling",
             font=ctk.CTkFont(size=13, weight="bold")
         ).pack(pady=(8, 6))
 
-        ctk.CTkLabel(noise_roi_frame, text="Gaussian Std Dev", font=ctk.CTkFont(size=11)).pack(anchor="w", padx=10)
-        self.gaussian_std_entry = ctk.CTkEntry(noise_roi_frame)
+        ctk.CTkLabel(
+            noise_frame,
+            text="Gaussian Std Dev",
+            font=ctk.CTkFont(size=11)
+        ).pack(anchor="w", padx=10)
+
+        self.gaussian_std_entry = ctk.CTkEntry(noise_frame)
         self.gaussian_std_entry.pack(padx=10, pady=(2, 6), fill="x")
         self.gaussian_std_entry.insert(0, "25")
 
-        ctk.CTkLabel(noise_roi_frame, text="Uniform Range (±)", font=ctk.CTkFont(size=11)).pack(anchor="w", padx=10)
-        self.uniform_range_entry = ctk.CTkEntry(noise_roi_frame)
+        ctk.CTkLabel(
+            noise_frame,
+            text="Uniform Range (±)",
+            font=ctk.CTkFont(size=11)
+        ).pack(anchor="w", padx=10)
+
+        self.uniform_range_entry = ctk.CTkEntry(noise_frame)
         self.uniform_range_entry.pack(padx=10, pady=(2, 6), fill="x")
         self.uniform_range_entry.insert(0, "50")
 
-        noise_buttons = ctk.CTkFrame(noise_roi_frame, fg_color="transparent")
-        noise_buttons.pack(pady=3)
-        ctk.CTkButton(noise_buttons, text="Add Gaussian", command=self.apply_gaussian_noise, width=90).pack(side="left", padx=3)
-        ctk.CTkButton(noise_buttons, text="Add Uniform",  command=self.apply_uniform_noise,  width=90).pack(side="left", padx=3)
+        noise_buttons = ctk.CTkFrame(noise_frame, fg_color="transparent")
+        noise_buttons.pack(pady=(4, 10))
 
-        ctk.CTkFrame(noise_roi_frame, height=2, fg_color="#444").pack(fill="x", padx=10, pady=6)
+        ctk.CTkButton(
+            noise_buttons,
+            text="Add Gaussian",
+            command=self.apply_gaussian_noise,
+            width=120
+        ).pack(side="left", padx=4)
+
+        ctk.CTkButton(
+            noise_buttons,
+            text="Add Uniform",
+            command=self.apply_uniform_noise,
+            width=120
+        ).pack(side="left", padx=4)
+
+        # ---------------- ROI section ----------------
+        roi_frame = ctk.CTkFrame(noise_roi_frame)
+        roi_frame.pack(fill="x", padx=5, pady=5)
 
         ctk.CTkLabel(
-            noise_roi_frame,
-            text="Draw ROI: click & drag\non the processed image",
+            roi_frame,
+            text="ROI Analysis",
+            font=ctk.CTkFont(size=13, weight="bold")
+        ).pack(pady=(8, 6))
+
+        ctk.CTkLabel(
+            roi_frame,
+            text="Draw ROI: click and drag on the processed image",
             font=ctk.CTkFont(size=11),
-            text_color="#aaa"
+            text_color="#aaa",
+            wraplength=260
         ).pack(padx=10, pady=(2, 4))
 
         self.roi_info_label = ctk.CTkLabel(
-            noise_roi_frame,
+            roi_frame,
             text="No ROI selected",
             font=ctk.CTkFont(size=11),
             text_color="#aaa"
         )
         self.roi_info_label.pack(padx=10, pady=2)
-        
-        
+
         ctk.CTkButton(
-            noise_roi_frame,
+            roi_frame,
             text="Isolate ROI",
             command=self.isolate_roi,
             width=180
-        ).pack(pady=(4, 4))
+        ).pack(pady=(8, 4))
+
         ctk.CTkButton(
-            noise_roi_frame,
+            roi_frame,
             text="Show ROI Statistics",
             command=self.show_roi_stats,
             width=180,
             fg_color="#1a5c3a",
             hover_color="#134a2e"
         ).pack(pady=(0, 10))
-
 
     def build_pipeline_log_tab(self):
         log_tab = self.tab_view.tab("Pipeline Log")
