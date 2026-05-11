@@ -20,7 +20,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from processing.frequency.frequency_template_matching import fourier_cross_correlate
+from processing.frequency.frequency_template_matching import fourier_cross_correlate_normalized
 from image_io.image_loader import load_dicom_image
 
 
@@ -85,8 +85,8 @@ def main():
     print(f"  Template range: [{template.min()}, {template.max()}]")
     
     # Run template matching
-    print("\n[4] Running Fourier cross-correlation...")
-    result_image, norm_corr_map, (peak_row, peak_col), (th, tw) = fourier_cross_correlate(
+    print("\n[4] Running Fourier normalized cross-correlation...")
+    result_image, norm_corr_map, (peak_row, peak_col), (th, tw) = fourier_cross_correlate_normalized(
         gray_image, template
     )
     

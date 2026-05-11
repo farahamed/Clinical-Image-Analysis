@@ -91,28 +91,19 @@ def fourier_cross_correlate(image: np.ndarray, template: np.ndarray):
 
     # ── 5. Cross-correlation spectrum: C = F · conj(G) ───────────────────────
     corr_spectrum = F_image * np.conj(F_template)
-
-    # ── 6. Inverse FFT → full correlation map ────────────────────────────────
     correlation_map = np.real(np.fft.ifft2(corr_spectrum))
-    # correlation_map.shape = (pad_rows, pad_cols)
 
-    # ── 7. Crop to valid region before searching for the peak ─────────────────
-    # A valid match top-left must sit at row in [0, ih) and col in [0, iw)
-    # so the template still fits inside the image.
     valid_map = correlation_map[:ih, :iw]
 
-    # Normalise valid map to [0, 1] for display
     v_min, v_max = valid_map.min(), valid_map.max()
     if v_max - v_min > 1e-10:
         norm_corr_map = (valid_map - v_min) / (v_max - v_min)
     else:
         norm_corr_map = np.zeros_like(valid_map)
 
-    # Peak on the valid region (raw values, not normalised)
     peak_flat = int(np.argmax(valid_map))
     peak_row, peak_col = np.unravel_index(peak_flat, valid_map.shape)
 
-    # ── 8. Draw bounding box on a copy of the original image ─────────────────
     result_image = _to_rgb_uint8(image).copy()
     r1, c1 = int(peak_row), int(peak_col)
     r2, c2 = r1 + th - 1, c1 + tw - 1
@@ -122,104 +113,80 @@ def fourier_cross_correlate(image: np.ndarray, template: np.ndarray):
 
 
 def fourier_cross_correlate_normalized(image: np.ndarray, template: np.ndarray):
-    """
-    Locate `template` inside `image` using NORMALIZED Fourier cross-correlation.
-
-    Normalized Cross-Correlation (NCC) normalizes by local image statistics,
-    making it robust to brightness/contrast variations — crucial for medical images
-    with uneven illumination.
-
-    Mathematical approach:
-    ──────────────────────
-    1. For each position (r, c), compute the local mean μ and std σ of the
-       image region matching template size
-    2. Normalize the image region: (region - μ) / σ
-    3. Normalize the template once: (template - template_mean) / template_std
-    4. Compute correlation of normalized regions
-    5. NCC[r,c] ∈ [-1, 1] where 1 = perfect match, -1 = perfect inverse
-
-    Returns
-    -------
-    result_image   : np.ndarray (H, W, 3) uint8 — original with bounding box
-    norm_corr_map  : np.ndarray (H, W) float64 — NCC map in [0, 1] (normalized for display)
-    peak           : tuple (row, col)  — top-left corner of best match
-    template_shape : tuple (th, tw)    — template height and width
-    """
-
-    # ── 1. Grayscale float ────────────────────────────────────────────────────
-    gray_image    = _to_gray_float(image)
+    gray_image = _to_gray_float(image)
     gray_template = _to_gray_float(template)
 
     ih, iw = gray_image.shape
     th, tw = gray_template.shape
+    N = float(th * tw)
 
     if th > ih or tw > iw:
-        raise ValueError(
-            f"Template ({th}×{tw}) is larger than the image ({ih}×{iw})."
-        )
+        raise ValueError(f"Template ({th}×{tw}) is larger than the image ({ih}×{iw}).")
     if th < 2 or tw < 2:
         raise ValueError("Template must be at least 2×2 pixels.")
 
-    # ── 2. Normalize template once ────────────────────────────────────────────
+    # ── FIX 2: subtract global mean BEFORE squaring ─────────────────────────
+    gray_image -= gray_image.mean()
+
+    # ── Normalize template (zero-mean, unit std) ─────────────────────────────
     t_mean = gray_template.mean()
     t_std = gray_template.std()
     if t_std < 1e-6:
-        # Constant template → zero NCC everywhere
-        print("  [warning] Template has near-zero variance; NCC undefined.")
-        norm_template = np.zeros_like(gray_template)
-    else:
-        norm_template = (gray_template - t_mean) / t_std
+        result_image = _to_rgb_uint8(image).copy()
+        _draw_rect(result_image, 0, 0, th - 1, tw - 1, color=(255, 0, 0), thickness=2)
+        return result_image, np.zeros((ih, iw)), (0, 0), (th, tw)
+    norm_template = (gray_template - t_mean) / t_std
 
-    # ── 3. Pad and compute raw correlation via FFT ────────────────────────────
     pad_rows = ih + th - 1
     pad_cols = iw + tw - 1
 
-    image_padded = np.zeros((pad_rows, pad_cols), dtype=np.float64)
-    image_padded[:ih, :iw] = gray_image
+    img_padded = np.zeros((pad_rows, pad_cols), dtype=np.float64)
+    img_padded[:ih, :iw] = gray_image
 
-    template_padded = np.zeros((pad_rows, pad_cols), dtype=np.float64)
-    template_padded[:th, :tw] = norm_template
+    img_sq_padded = np.zeros((pad_rows, pad_cols), dtype=np.float64)
+    img_sq_padded[:ih, :iw] = gray_image ** 2
 
-    F_image    = np.fft.fft2(image_padded)
-    F_template = np.fft.fft2(template_padded)
+    tmpl_padded = np.zeros((pad_rows, pad_cols), dtype=np.float64)
+    tmpl_padded[:th, :tw] = norm_template
 
-    corr_spectrum = F_image * np.conj(F_template)
-    correlation_map = np.real(np.fft.ifft2(corr_spectrum))
+    ones_padded = np.zeros((pad_rows, pad_cols), dtype=np.float64)
+    ones_padded[:th, :tw] = 1.0
 
-    # ── 4. Compute local image statistics over valid region ──────────────────
-    # Only compute stats where template fully fits
-    valid_corr = correlation_map[:ih, :iw]
-    
+    F_img = np.fft.fft2(img_padded)
+    F_img_sq = np.fft.fft2(img_sq_padded)
+    F_tmpl = np.fft.fft2(tmpl_padded)
+    F_ones = np.fft.fft2(ones_padded)
+
+    numerator_full = np.real(np.fft.ifft2(F_img * np.conj(F_tmpl)))
+    local_sum_full = np.real(np.fft.ifft2(F_img * np.conj(F_ones)))
+    local_sum_sq_full = np.real(np.fft.ifft2(F_img_sq * np.conj(F_ones)))
+
+    out_h = ih - th + 1
+    out_w = iw - tw + 1
+
+    # ── FIX 1: valid region starts at index 0, NOT th-1 ──────────────────────
+    numerator = numerator_full[:out_h, :out_w]
+    local_sum = local_sum_full[:out_h, :out_w]
+    local_sum_sq = local_sum_sq_full[:out_h, :out_w]
+
+    local_mean = local_sum / N
+    local_mean_sq = local_sum_sq / N
+    local_var = np.clip(local_mean_sq - local_mean ** 2, 0.0, None)
+    local_std = np.sqrt(local_var)
+
+    denom = N * local_std
+    safe = denom > 1e-12
+    ncc_valid = np.zeros((out_h, out_w), dtype=np.float64)
+    ncc_valid[safe] = numerator[safe] / denom[safe]
+    ncc_valid = np.clip(ncc_valid, -1.0, 1.0)
+
     ncc_map = np.zeros((ih, iw), dtype=np.float64)
-    
-    # Slide template over image and compute NCC at each position
-    for r in range(ih - th + 1):
-        for c in range(iw - tw + 1):
-            window = gray_image[r:r + th, c:c + tw]
-            w_mean = window.mean()
-            w_std = window.std()
-            
-            if w_std < 1e-6:
-                # Uniform window → NCC is undefined (set to 0)
-                ncc_map[r, c] = 0.0
-            else:
-                # Normalized window
-                norm_window = (window - w_mean) / w_std
-                # NCC = mean of (norm_window * norm_template)
-                ncc_map[r, c] = np.mean(norm_window * norm_template)
-    
-    # Clamp to valid range [-1, 1]
-    ncc_map = np.clip(ncc_map, -1.0, 1.0)
-
-    # ── 5. Normalise to [0, 1] for display ────────────────────────────────────
-    # Shift from [-1, 1] to [0, 1]
+    ncc_map[:out_h, :out_w] = ncc_valid
     norm_corr_map = (ncc_map + 1.0) / 2.0
 
-    # ── 6. Find peak ──────────────────────────────────────────────────────────
-    peak_flat = int(np.argmax(ncc_map[:ih - th + 1, :iw - tw + 1]))
-    peak_row, peak_col = np.unravel_index(peak_flat, (ih - th + 1, iw - tw + 1))
+    peak_flat = int(np.argmax(ncc_valid))
+    peak_row, peak_col = np.unravel_index(peak_flat, (out_h, out_w))
 
-    # ── 7. Draw bounding box ──────────────────────────────────────────────────
     result_image = _to_rgb_uint8(image).copy()
     r1, c1 = int(peak_row), int(peak_col)
     r2, c2 = r1 + th - 1, c1 + tw - 1
