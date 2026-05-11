@@ -159,7 +159,7 @@ def erode(binary_image, structuring_element):
 
             for m in range(se_h):
                 for n in range(se_w):
-                    if structuring_element[m, n] == 1:
+                    if structuring_element[m, n] == 1: # Only check active SE positions
                         if padded[i + m, j + n] != 255:
                             fits = False
                             break
@@ -199,7 +199,7 @@ def dilate(binary_image, structuring_element):
 
             for m in range(se_h):
                 for n in range(se_w):
-                    if structuring_element[m, n] == 1:
+                    if structuring_element[m, n] == 1: # Only check active SE positions
                         if padded[i + m, j + n] == 255:
                             overlaps = True
                             break
