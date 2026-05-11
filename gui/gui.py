@@ -21,6 +21,10 @@ from processing.histogram.local_equalization import (
     local_histogram_equalization_optimized
 )
 from processing.geometry.transformations import rotate, shear
+from processing.noise.noise import add_gaussian_noise, add_uniform_noise
+from processing.roi.roi_tool import extract_roi, draw_roi_on_image
+# Add this with your other imports at the top of gui.py
+from processing.roi.roi_stats_window import show_roi_statistics
 from processing.frequency.frequency_template_matching import (
     fourier_cross_correlate,
     fourier_cross_correlate_normalized,
@@ -193,6 +197,10 @@ class MedicalImageApp:
         self.current_processed = None
         self._tm_target_image = None
         self.zoom_factor = 1.0
+
+        self.roi_start = None
+        self.roi_end   = None
+        self.roi_rect  = None
 
         # Template Matching state
         self._tm_template       = None
@@ -411,6 +419,10 @@ class MedicalImageApp:
         # Operation controls are now visible while the user sees the image.
         self.build_operation_controls(main_viewer_frame)
 
+        self.processed_image_view.canvas.bind("<ButtonPress-1>",   self._roi_drag_start)
+        self.processed_image_view.canvas.bind("<B1-Motion>",       self._roi_drag_move)
+        self.processed_image_view.canvas.bind("<ButtonRelease-1>", self._roi_drag_end)
+
     def build_operation_controls(self, parent):
         # Fixed-height scrollable operations area.
         # This prevents the controls from being cut off when the window is not tall enough.
@@ -430,6 +442,9 @@ class MedicalImageApp:
         sections_frame.grid_columnconfigure(0, weight=1)
         sections_frame.grid_columnconfigure(1, weight=1)
         sections_frame.grid_columnconfigure(2, weight=1)
+        sections_frame.grid_columnconfigure(3, weight=1)
+
+
 
         # ---------------- Filtering section ----------------
         filtering_frame = ctk.CTkFrame(sections_frame)
@@ -585,6 +600,65 @@ class MedicalImageApp:
             command=self.apply_shearing,
             width=90
         ).pack(side="left", padx=3)
+
+        # ---------------- Noise & ROI section ----------------
+        noise_roi_frame = ctk.CTkFrame(sections_frame)
+        noise_roi_frame.grid(row=0, column=3, sticky="nsew", padx=5, pady=5)
+
+        ctk.CTkLabel(
+            noise_roi_frame,
+            text="Noise & ROI",
+            font=ctk.CTkFont(size=13, weight="bold")
+        ).pack(pady=(8, 6))
+
+        ctk.CTkLabel(noise_roi_frame, text="Gaussian Std Dev", font=ctk.CTkFont(size=11)).pack(anchor="w", padx=10)
+        self.gaussian_std_entry = ctk.CTkEntry(noise_roi_frame)
+        self.gaussian_std_entry.pack(padx=10, pady=(2, 6), fill="x")
+        self.gaussian_std_entry.insert(0, "25")
+
+        ctk.CTkLabel(noise_roi_frame, text="Uniform Range (±)", font=ctk.CTkFont(size=11)).pack(anchor="w", padx=10)
+        self.uniform_range_entry = ctk.CTkEntry(noise_roi_frame)
+        self.uniform_range_entry.pack(padx=10, pady=(2, 6), fill="x")
+        self.uniform_range_entry.insert(0, "50")
+
+        noise_buttons = ctk.CTkFrame(noise_roi_frame, fg_color="transparent")
+        noise_buttons.pack(pady=3)
+        ctk.CTkButton(noise_buttons, text="Add Gaussian", command=self.apply_gaussian_noise, width=90).pack(side="left", padx=3)
+        ctk.CTkButton(noise_buttons, text="Add Uniform",  command=self.apply_uniform_noise,  width=90).pack(side="left", padx=3)
+
+        ctk.CTkFrame(noise_roi_frame, height=2, fg_color="#444").pack(fill="x", padx=10, pady=6)
+
+        ctk.CTkLabel(
+            noise_roi_frame,
+            text="Draw ROI: click & drag\non the processed image",
+            font=ctk.CTkFont(size=11),
+            text_color="#aaa"
+        ).pack(padx=10, pady=(2, 4))
+
+        self.roi_info_label = ctk.CTkLabel(
+            noise_roi_frame,
+            text="No ROI selected",
+            font=ctk.CTkFont(size=11),
+            text_color="#aaa"
+        )
+        self.roi_info_label.pack(padx=10, pady=2)
+        
+        
+        ctk.CTkButton(
+            noise_roi_frame,
+            text="Isolate ROI",
+            command=self.isolate_roi,
+            width=180
+        ).pack(pady=(4, 4))
+        ctk.CTkButton(
+            noise_roi_frame,
+            text="Show ROI Statistics",
+            command=self.show_roi_stats,
+            width=180,
+            fg_color="#1a5c3a",
+            hover_color="#134a2e"
+        ).pack(pady=(0, 10))
+
 
     def build_pipeline_log_tab(self):
         log_tab = self.tab_view.tab("Pipeline Log")
@@ -1718,6 +1792,167 @@ class MedicalImageApp:
         
         if hasattr(self,"fft_viewer"):
             self.fft_viewer.clear_points()
+
+    # ── Noise ──────────────────────────────────────────────────────────────
+
+    def apply_gaussian_noise(self):
+        try:
+            std = float(self.gaussian_std_entry.get())
+            if std <= 0:
+                raise ValueError("Std dev must be greater than 0.")
+            self.apply_pipeline_operation(
+                lambda img: add_gaussian_noise(img, sigma=std),
+                f"Gaussian Noise (std={std})"
+            )
+        except Exception as e:
+            messagebox.showerror("Invalid Input", str(e))
+
+    def apply_uniform_noise(self):
+        try:
+            r = float(self.uniform_range_entry.get())
+            if r <= 0:
+                raise ValueError("Range must be greater than 0.")
+            self.apply_pipeline_operation(
+                lambda img: add_uniform_noise(img, low=-r, high=r),
+                f"Uniform Noise (range=±{r})"
+            )
+        except Exception as e:
+            messagebox.showerror("Invalid Input", str(e))
+
+    # ── ROI ────────────────────────────────────────────────────────────────
+
+    def _roi_drag_start(self, event):
+        self.roi_start = (event.x, event.y)
+        self.roi_end   = None
+        if self.roi_rect is not None:
+            self.processed_image_view.canvas.delete(self.roi_rect)
+            self.roi_rect = None
+
+    def _roi_drag_move(self, event):
+        if self.roi_start is None:
+            return
+        if self.roi_rect is not None:
+            self.processed_image_view.canvas.delete(self.roi_rect)
+        x1, y1 = self.roi_start
+        self.roi_rect = self.processed_image_view.canvas.create_rectangle(
+            x1, y1, event.x, event.y,
+            outline="yellow", width=2, dash=(4, 2)
+        )
+
+    def _roi_drag_end(self, event):
+        if self.roi_start is None:
+            return
+        self.roi_end = (event.x, event.y)
+        x1, y1 = self.roi_start
+        x2, y2 = self.roi_end
+        w = abs(x2 - x1)
+        h = abs(y2 - y1)
+        self.roi_info_label.configure(
+            text=f"ROI: {w}×{h} px at ({min(x1,x2)}, {min(y1,y2)})"
+        )
+
+    def isolate_roi(self):
+     if not self.pipeline.has_image():
+        messagebox.showwarning("No Image", "Please load an image first.")
+        return
+
+     if self.roi_start is None or self.roi_end is None:
+        messagebox.showwarning("No ROI", "Please draw an ROI on the processed image first.")
+        return
+
+     # Convert canvas coords → actual image pixel coords BEFORE clearing
+     img_x1, img_y1 = self._canvas_to_image_coords(*self.roi_start)
+     img_x2, img_y2 = self._canvas_to_image_coords(*self.roi_end)
+
+     # Capture converted values into the lambda immediately (avoids reference bug)
+     _x1, _y1, _x2, _y2 = img_x1, img_y1, img_x2, img_y2
+
+     self.apply_pipeline_operation(
+        lambda img: extract_roi(img, _x1, _y1, _x2, _y2),
+        f"ROI Isolation ({abs(_x2-_x1)}×{abs(_y2-_y1)} px)"
+     )
+
+     # Clear the rectangle after isolating
+     self.roi_start = None
+     self.roi_end   = None
+     if self.roi_rect is not None:
+        self.processed_image_view.canvas.delete(self.roi_rect)
+        self.roi_rect = None
+     
+     self.roi_info_label.configure(text="No ROI selected")
+    
+    def show_roi_stats(self):
+     """
+     Compute and display local histogram, mean, and variance
+     for the currently drawn ROI — WITHOUT isolating it first.
+     The user can draw the ROI, inspect stats, then decide to isolate.
+     """
+     if not self.pipeline.has_image():
+      messagebox.showwarning("No Image", "Please load an image first.")
+      return
+
+     if self.roi_start is None or self.roi_end is None:
+      messagebox.showwarning(
+         "No ROI",
+         "Please draw a rectangle on the processed image first,\n"
+         "then click Show ROI Statistics."
+      )
+      return
+
+     # Convert canvas coords → image pixel coords
+     img_x1, img_y1 = self._canvas_to_image_coords(*self.roi_start)
+     img_x2, img_y2 = self._canvas_to_image_coords(*self.roi_end)
+
+     current_img = self.pipeline.get_current()
+     if current_img is None:
+        return
+     # ──────────────────────────────────────────────────────────
+     # Extract the ROI pixels from the current image
+     from processing.roi.roi_tool import extract_roi  # ← WRONG (inside function)
+     try:
+         roi = extract_roi(current_img, img_x1, img_y1, img_x2, img_y2)
+     except ValueError as e:
+        messagebox.showwarning("ROI Too Small", str(e))
+        return
+
+     w = abs(img_x2 - img_x1)
+     h = abs(img_y2 - img_y1)
+
+     # Open the statistics popup window
+     show_roi_statistics(roi, roi_label=f"{w}×{h} px")
+     self.status_label.configure(text=f"ROI stats shown for {w}×{h} px region")
+
+
+    def _canvas_to_image_coords(self, canvas_x, canvas_y):
+   
+      img = self.pipeline.get_current()
+      if img is None:
+        return canvas_x, canvas_y
+
+      img_h, img_w = img.shape[:2]
+      canvas_w = self.processed_image_view.canvas.winfo_width()
+      canvas_h = self.processed_image_view.canvas.winfo_height()
+
+      # This is the same scale factor used in update_display() fit mode
+      scale = min(canvas_w / img_w, canvas_h / img_h)
+
+      # The image is centred in the canvas — calculate the offset
+      display_w = int(img_w * scale)
+      display_h = int(img_h * scale)
+      offset_x  = (canvas_w - display_w) // 2
+      offset_y  = (canvas_h - display_h) // 2
+
+      # Reverse the scale and offset
+      img_x = int((canvas_x - offset_x) / scale)
+      img_y = int((canvas_y - offset_y) / scale)
+
+      # Clamp to image bounds
+      img_x = max(0, min(img_x, img_w - 1))
+      img_y = max(0, min(img_y, img_h - 1))
+
+      return img_x, img_y
+    # processing/roi/roi_stats_window.py
+
 
     def run(self):
         self.app.mainloop()
