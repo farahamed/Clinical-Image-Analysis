@@ -180,9 +180,9 @@ def fourier_cross_correlate_normalized(image: np.ndarray, template: np.ndarray):
     ncc_valid[safe] = numerator[safe] / denom[safe]
     ncc_valid = np.clip(ncc_valid, -1.0, 1.0)
 
-    ncc_map = np.zeros((ih, iw), dtype=np.float64)
-    ncc_map[:out_h, :out_w] = ncc_valid
-    norm_corr_map = (ncc_map + 1.0) / 2.0
+    # ── Memory optimization: avoid redundant full-size array ──────────────────
+    norm_corr_map = np.zeros((ih, iw), dtype=np.float64)
+    norm_corr_map[:out_h, :out_w] = (ncc_valid + 1.0) / 2.0
 
     peak_flat = int(np.argmax(ncc_valid))
     peak_row, peak_col = np.unravel_index(peak_flat, (out_h, out_w))
