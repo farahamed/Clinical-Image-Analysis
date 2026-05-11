@@ -1375,10 +1375,15 @@ class MedicalImageApp:
                 res_canvas.create_image(ox2, oy2, anchor="nw",
                                         image=self._tm_photo_result)
 
-            # ── Draw correlation map ─────────────────────────────────────────────
+            # ── Draw correlation map
             corr_canvas = self._tm_corr_canvas
             corr_canvas.delete("all")
-            corr_display = (norm_corr * 255).astype(np.uint8)
+            # Valid region size: out_h = ih - th + 1, out_w = iw - tw + 1
+            ih_full, iw_full = self.current_original.shape[:2]
+            out_h = max(1, ih_full - th + 1)
+            out_w = max(1, iw_full - tw + 1)
+            corr_valid = norm_corr[:out_h, :out_w]
+            corr_display = (corr_valid * 255).astype(np.uint8)
             corr_out = _tm_draw_on_canvas(corr_canvas, corr_display)
             if corr_out is not None:
                 _, sc, ocx, ocy = corr_out
@@ -1395,6 +1400,18 @@ class MedicalImageApp:
                 corr_canvas.delete("all")
                 corr_canvas.create_image(cocx, cocy, anchor="nw",
                                          image=self._tm_photo_corr)
+                # Optionally draw peak marker on the displayed valid-region
+                # Map peak (pr,pc) in valid-region to displayed coordinates
+                try:
+                    # pr, pc are integers (row, col) within valid region
+                    disp_x = cocx + int(pc * sc2)
+                    disp_y = cocy + int(pr * sc2)
+                    # draw a small green cross
+                    size = max(3, int(4 * sc2))
+                    corr_canvas.create_line(disp_x - size, disp_y, disp_x + size, disp_y, fill='lime', width=2)
+                    corr_canvas.create_line(disp_x, disp_y - size, disp_x, disp_y + size, fill='lime', width=2)
+                except Exception:
+                    pass
 
             # Update info label
             self._tm_result_label.configure(
