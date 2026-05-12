@@ -990,8 +990,8 @@ class MedicalImageApp:
         self.fft_viewer.pack(fill="both", expand=True, padx=10, pady=10)
 
         #RIGHT: Notch filter controls
-        right_frame = ctk.CTkFrame(main_frame, width=420)
-        right_frame.pack(side="right", fill="y", padx=10, pady=10)
+        right_frame = ctk.CTkScrollableFrame(main_frame, width=420)
+        right_frame.pack(side="right", fill="both", expand=True, padx=10, pady=10)
 
         #Reconstructed image label
         ctk.CTkLabel(
