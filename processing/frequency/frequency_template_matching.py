@@ -31,21 +31,26 @@ def _draw_rect(image_rgb: np.ndarray,
     """
     ih, iw = image_rgb.shape[:2]
 
-    r1 = max(r1, 0)
-    c1 = max(c1, 0)
-    r2 = min(r2, ih - 1)
-    c2 = min(c2, iw - 1)
+    #These lines prevent rectangle from going outside image boundaries
+    r1 = max(r1, 0) #Top
+    c1 = max(c1, 0) #Left
+    r2 = min(r2, ih - 1) #Bottom
+    c2 = min(c2, iw - 1) #Right
 
     for t in range(thickness):
         # Horizontal edges (top / bottom)
         if r1 + t < ih:
+            #Top edge
             image_rgb[r1 + t, c1:c2 + 1] = color
         if r2 - t >= 0:
+            #bottom Edge
             image_rgb[r2 - t, c1:c2 + 1] = color
         # Vertical edges (left / right)
         if c1 + t < iw:
+            #Left edge
             image_rgb[r1:r2 + 1, c1 + t] = color
         if c2 - t >= 0:
+            #Right edge
             image_rgb[r1:r2 + 1, c2 - t] = color
 
 def fourier_cross_correlate(image: np.ndarray, template: np.ndarray):
@@ -54,9 +59,11 @@ def fourier_cross_correlate(image: np.ndarray, template: np.ndarray):
     gray_image    = _to_gray_float(image)
     gray_template = _to_gray_float(template)
 
+    #converting image and template to grayscale arrays
     ih, iw = gray_image.shape
     th, tw = gray_template.shape
 
+    #validation
     if th > ih or tw > iw:
         raise ValueError(
             f"Template ({th}×{tw}) is larger than the image ({ih}×{iw})."
@@ -64,11 +71,12 @@ def fourier_cross_correlate(image: np.ndarray, template: np.ndarray):
     if th < 2 or tw < 2:
         raise ValueError("Template must be at least 2×2 pixels.")
 
-    # ── 2. Padded size (linear cross-correlation — no wrap-around) ────────────
+    # ── 2. Padded size (linear cross-correlation — to convert from circular to linear) ────────────
     pad_rows = ih + th - 1
     pad_cols = iw + tw - 1
 
     # ── 3. Zero-pad BOTH to the same padded size ──────────────────────────────
+    #Creates larger empty matrix
     image_padded = np.zeros((pad_rows, pad_cols), dtype=np.float64)
     image_padded[:ih, :iw] = gray_image          # ← gray_image, not image
 
@@ -80,18 +88,23 @@ def fourier_cross_correlate(image: np.ndarray, template: np.ndarray):
     F_template = np.fft.fft2(template_padded)     # shape: (pad_rows, pad_cols) ✓
 
     # ── 5. Cross-correlation spectrum: C = F · conj(G) ───────────────────────
+    #conjugate reverses phase information and allows sliding similarity comparison
     corr_spectrum = F_image * np.conj(F_template)
+    #Inverse FFT
     correlation_map = np.real(np.fft.ifft2(corr_spectrum))
 
     valid_map = correlation_map[:ih, :iw]
 
     v_min, v_max = valid_map.min(), valid_map.max()
     if v_max - v_min > 1e-10:
+        #Normalization, scales values to 0,1 for visualization
         norm_corr_map = (valid_map - v_min) / (v_max - v_min)
     else:
         norm_corr_map = np.zeros_like(valid_map)
 
+    #peak detection, finds location of highest similarity between template and image (largest correlation value)
     peak_flat = int(np.argmax(valid_map))
+    #converts flat index to 2D coordinates (row, column) in the valid correlation map
     peak_row, peak_col = np.unravel_index(peak_flat, valid_map.shape)
 
     result_image = _to_rgb_uint8(image).copy()
@@ -102,7 +115,9 @@ def fourier_cross_correlate(image: np.ndarray, template: np.ndarray):
     return result_image, norm_corr_map, (peak_row, peak_col), (th, tw)
 
 
+#invariant to illumination and contrast changes
 def fourier_cross_correlate_normalized(image: np.ndarray, template: np.ndarray):
+
     gray_image = _to_gray_float(image)
     gray_template = _to_gray_float(template)
 
@@ -116,6 +131,7 @@ def fourier_cross_correlate_normalized(image: np.ndarray, template: np.ndarray):
         raise ValueError("Template must be at least 2×2 pixels.")
 
     # ── FIX 2: subtract global mean BEFORE squaring ─────────────────────────
+    #Centers image intensities around zero.removes global brightness bias 
     gray_image -= gray_image.mean()
 
     # ── Normalize template (zero-mean, unit std) ─────────────────────────────
@@ -125,8 +141,10 @@ def fourier_cross_correlate_normalized(image: np.ndarray, template: np.ndarray):
         result_image = _to_rgb_uint8(image).copy()
         _draw_rect(result_image, 0, 0, th - 1, tw - 1, color=(255, 0, 0), thickness=2)
         return result_image, np.zeros((ih, iw)), (0, 0), (th, tw)
+    #Template normalization formula
     norm_template = (gray_template - t_mean) / t_std
 
+    # ── Padded size (linear cross-correlation — to convert from circular to linear) ────────────
     pad_rows = ih + th - 1
     pad_cols = iw + tw - 1
 
@@ -147,7 +165,9 @@ def fourier_cross_correlate_normalized(image: np.ndarray, template: np.ndarray):
     F_tmpl = np.fft.fft2(tmpl_padded)
     F_ones = np.fft.fft2(ones_padded)
 
+    #Measures similarity.
     numerator_full = np.real(np.fft.ifft2(F_img * np.conj(F_tmpl)))
+    #used to compute local mean, variance, standards deviation for each sliding window
     local_sum_full = np.real(np.fft.ifft2(F_img * np.conj(F_ones)))
     local_sum_sq_full = np.real(np.fft.ifft2(F_img_sq * np.conj(F_ones)))
 
@@ -165,6 +185,7 @@ def fourier_cross_correlate_normalized(image: np.ndarray, template: np.ndarray):
     local_std = np.sqrt(local_var)
 
     # Add a small epsilon to the denominator to avoid numerical instability
+    #Prevents division by zero
     denom = N * local_std
     eps = 1e-8
     denom_safe = denom + eps
